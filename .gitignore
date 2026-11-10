@@ -1,0 +1,20 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+
+# Local SQLite cache
+*.db
+*.sqlite3
+.pulse_cache/

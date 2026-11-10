@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paypal-pulse"
+version = "0.1.0"
+description = "Terminal-Native Financial Telemetry & AI Copilot for Indie Developers and Micro-Businesses on PayPal"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Marc Jacob Doria"}
+]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+    "textual>=0.50.0",
+    "httpx>=0.26.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+]
+
+[project.scripts]
+pp = "pulse.cli:main"
+paypal-pulse = "pulse.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pulse*"]
