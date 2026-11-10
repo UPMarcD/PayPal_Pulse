@@ -23,6 +23,7 @@ def test_mask_email_gdpr_privacy():
     assert mask_email("johndoe@example.com") == "j***e@example.com"
     assert mask_email("al@test.de") == "a***@test.de"
     assert mask_email("a@b.com") == "a***@b.com"
+    assert mask_email("@domain.com") == "[REDACTED]@domain.com"
     assert mask_email("invalid-email") == "[REDACTED_EMAIL]"
     assert mask_email(None) == "[REDACTED_EMAIL]"
     assert mask_email("") == "[REDACTED_EMAIL]"
@@ -95,3 +96,7 @@ def test_live_mode_mutation_guard_blocks_unconfirmed_order(tmp_path):
             assert "[LIVE MODE GUARD" not in (ans_confirmed.executed_action or "")
             assert ans_confirmed.created_order is not None
             assert ans_confirmed.created_order.order_id == "PP-LIVE-123"
+
+        # 3. Dispute resolution in live mode must also be blocked without confirmation
+        ans_disp = ask_copilot("Resolve dispute PP-D-90411-DE", settings=settings)
+        assert "[LIVE MODE GUARD (OWASP LLM06)]" in ans_disp.answer or "[LIVE MODE GUARD" in (ans_disp.executed_action or "")

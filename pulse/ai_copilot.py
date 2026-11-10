@@ -83,6 +83,8 @@ def mask_email(email: str | None) -> str:
         return "[REDACTED_EMAIL]"
     parts = email.split("@", 1)
     user, domain = parts[0], parts[1]
+    if not user:
+        return f"[REDACTED]@{domain}"
     if len(user) <= 2:
         masked_user = user[0] + "***"
     else:
@@ -348,7 +350,7 @@ def build_financial_context_prompt(
             [
                 f"  - Created Draft Invoice ID: {live_invoice_created.invoice_id}",
                 f"  - Invoice Status: {live_invoice_created.status}",
-                f"  - Recipient Email: {live_invoice_created.recipient_email}",
+                f"  - Recipient Email: {mask_email(live_invoice_created.recipient_email)}",
                 f"  - Invoice API Link: {live_invoice_created.self_url}",
             ]
         )
@@ -524,8 +526,8 @@ def ask_copilot(
             tokens_per_sec=0.0,
         )
 
-    # Ensure store is seeded so telemetry context is always rich
-    if not st.is_seeded():
+    # Ensure store is seeded so telemetry context is always rich (unless in clean mode or has live data)
+    if st.should_auto_seed():
         st.seed_smartwatch_telemetry()
 
     executed_action: str | None = None
@@ -535,7 +537,7 @@ def ask_copilot(
     # Check if user asked to create a live PayPal Sandbox order, invoice, or payment link
     should_create, amt, cur, desc = _detect_order_intent(question)
     is_live_mode = cfg.paypal_mode.lower() == "live"
-    is_confirmed = "--confirm" in question.lower() or "[confirmed]" in question.lower()
+    is_confirmed = bool(re.search(r"(?:^|\s)(?:--confirm|\[confirmed\])(?:\s|$)", question, re.IGNORECASE))
 
     if should_create and cfg.has_paypal_credentials:
         wants_invoice = "invoice" in question.lower()
@@ -554,13 +556,15 @@ def ask_copilot(
                 amount=amt,
                 currency=cur,
                 recipient_email=recipient_email,
+                auto_send=True,
             )
             if inv_res.success:
                 created_invoice = inv_res
                 st.set_meta("last_live_invoice_id", inv_res.invoice_id)
+                payer_link_info = f" ({inv_res.payer_view_url})" if inv_res.payer_view_url else ""
                 action_parts.append(
-                    f"Created live PayPal Sandbox Draft Invoice {inv_res.invoice_id} "
-                    f"for {amt:.2f} {cur} to {recipient_email}"
+                    f"Created live PayPal Sandbox Invoice {inv_res.invoice_id} [{inv_res.status}] "
+                    f"for {amt:.2f} {cur} to {recipient_email}{payer_link_info}"
                 )
         else:
             order_res = pp.create_order(
@@ -584,22 +588,29 @@ def ask_copilot(
     dispute_resolved_info: str | None = None
     target_dispute_id = _detect_dispute_intent(question)
     if target_dispute_id:
-        disp_rec = st.get_dispute_by_id(target_dispute_id)
-        if disp_rec:
-            sku_val = disp_rec.get("platform_sku", disp_rec.get("device_model", "Software License"))
-            sandbox_res = pp.submit_dispute_resolution(
-                dispute_id=target_dispute_id,
-                evidence_text=f"Hotfix v1.2.2 deployed for {sku_val}",
-                amount=float(disp_rec.get("amount", 5.99)),
-                currency=disp_rec.get("currency", "EUR"),
+        if is_live_mode and not is_confirmed:
+            act_str = (
+                f"[LIVE MODE GUARD (OWASP LLM06)] Skipped autonomous dispute resolution for '{target_dispute_id}'. "
+                f"Production live mode requires interactive confirmation (`--confirm`)."
             )
-            rep_order = sandbox_res.get("replacement_order")
-            ev_text, _ = draft_dispute_evidence(dispute=disp_rec, replacement_order=rep_order, settings=cfg)
-            rep_id = rep_order.order_id if rep_order and rep_order.success else "PP-REPLACEMENT-PENDING"
-            st.resolve_dispute(dispute_id=target_dispute_id, ai_evidence=ev_text, replacement_order_id=rep_id)
-            dispute_resolved_info = f"{target_dispute_id} (Replacement Order {rep_id})"
-            act_str = f"Auto-drafted Pulse AI evidence & resolved dispute {target_dispute_id} (Replacement Sandbox Order {rep_id})"
             executed_action = f"{executed_action} | {act_str}" if executed_action else act_str
+        else:
+            disp_rec = st.get_dispute_by_id(target_dispute_id)
+            if disp_rec:
+                sku_val = disp_rec.get("platform_sku", disp_rec.get("device_model", "Software License"))
+                sandbox_res = pp.submit_dispute_resolution(
+                    dispute_id=target_dispute_id,
+                    evidence_text=f"Hotfix v1.2.2 deployed for {sku_val}",
+                    amount=float(disp_rec.get("amount", 5.99)),
+                    currency=disp_rec.get("currency", "EUR"),
+                )
+                rep_order = sandbox_res.get("replacement_order")
+                ev_text, _ = draft_dispute_evidence(dispute=disp_rec, replacement_order=rep_order, settings=cfg)
+                rep_id = rep_order.order_id if rep_order and rep_order.success else "PP-REPLACEMENT-PENDING"
+                st.resolve_dispute(dispute_id=target_dispute_id, ai_evidence=ev_text, replacement_order_id=rep_id)
+                dispute_resolved_info = f"{target_dispute_id} (Replacement Order {rep_id})"
+                act_str = f"Auto-drafted Pulse AI evidence & resolved dispute {target_dispute_id} (Replacement Sandbox Order {rep_id})"
+                executed_action = f"{executed_action} | {act_str}" if executed_action else act_str
 
     summary = st.get_dashboard_summary()
     system_prompt = build_financial_context_prompt(
@@ -630,7 +641,7 @@ def ask_copilot(
                     except Exception:
                         args = {}
 
-                    if is_live_mode and not is_confirmed and fn_name in ("create_paypal_order", "create_paypal_invoice"):
+                    if is_live_mode and not is_confirmed and fn_name in ("create_paypal_order", "create_paypal_invoice", "resolve_paypal_dispute"):
                         action_parts.append(f"[LIVE MODE GUARD (OWASP LLM06)] Skipped tool execution for '{fn_name}'.")
                         continue
 
@@ -648,10 +659,19 @@ def ask_copilot(
                         tc_cur = str(args.get("currency", "USD")).upper()
                         tc_email = args.get("recipient_email", "partner@example.com")
                         tc_item = args.get("item_name", "Developer Consulting License")
-                        i_res = pp.create_draft_invoice(item_name=tc_item, amount=tc_amt, currency=tc_cur, recipient_email=tc_email)
+                        i_res = pp.create_draft_invoice(
+                            item_name=tc_item,
+                            amount=tc_amt,
+                            currency=tc_cur,
+                            recipient_email=tc_email,
+                            auto_send=True,
+                        )
                         if i_res.success:
                             created_invoice = i_res
-                            action_parts.append(f"LLM Tool Call: Created Invoice {i_res.invoice_id} ({tc_amt:.2f} {tc_cur})")
+                            payer_link = f" ({i_res.payer_view_url})" if i_res.payer_view_url else ""
+                            action_parts.append(
+                                f"LLM Tool Call: Created Invoice {i_res.invoice_id} [{i_res.status}] ({tc_amt:.2f} {tc_cur}){payer_link}"
+                            )
                     elif fn_name == "resolve_paypal_dispute":
                         disp_id = str(args.get("dispute_id", "")).strip().upper()
                         disp_rec = st.get_dispute_by_id(disp_id) if disp_id else None
