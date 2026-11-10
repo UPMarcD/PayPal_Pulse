@@ -87,14 +87,14 @@ class HelpModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
-            yield Static("⌨  PayPal Pulse — Keyboard Shortcuts & Navigation", id="help-title")
-            yield Static("[bold #58a6ff]Tabs & Views[/bold #58a6ff]")
+            yield Static("PayPal Pulse — Keyboard Shortcuts & Navigation", id="help-title")
+            yield Static("[bold #e5a824]Tabs & Views[/bold #e5a824]")
             yield Static("  [bold #f0f6fc]1[/bold #f0f6fc] or [bold #f0f6fc]d[/bold #f0f6fc]    Dashboard & 30-Day Financial KPIs")
             yield Static("  [bold #f0f6fc]2[/bold #f0f6fc] or [bold #f0f6fc]t[/bold #f0f6fc]    Git Release-to-Revenue Correlation Timeline")
             yield Static("  [bold #f0f6fc]3[/bold #f0f6fc] or [bold #f0f6fc]o[/bold #f0f6fc]    Live PayPal Sandbox Orders & Invoicing")
             yield Static("  [bold #f0f6fc]4[/bold #f0f6fc] or [bold #f0f6fc]x[/bold #f0f6fc]    Customer Disputes & Evidence Drafter")
             yield Static("  [bold #f0f6fc]5[/bold #f0f6fc] or [bold #f0f6fc]a[/bold #f0f6fc]    Pulse AI Copilot Interactive Log\n")
-            yield Static("[bold #58a6ff]Actions & Navigation[/bold #58a6ff]")
+            yield Static("[bold #e5a824]Actions & Navigation[/bold #e5a824]")
             yield Static("  [bold #f0f6fc]j / k[/bold #f0f6fc]        Scroll active DataTable rows (Vim down / up)")
             yield Static("  [bold #f0f6fc]r[/bold #f0f6fc]            Force refresh PayPal Sandbox balances & ledger")
             yield Static("  [bold #f0f6fc]L[/bold #f0f6fc]            Live/Sandbox credential setup")
@@ -149,7 +149,7 @@ class PayPalPulseTUI(App):
         background: #111c2e;
     }
     Underline {
-        color: #00a8ea;
+        color: #e5a824;
     }
     TabPane {
         background: #0a101d;
@@ -272,23 +272,23 @@ class PayPalPulseTUI(App):
     }
     .claude-welcome-card {
         height: auto;
-        border-left: thick #d97757;
-        background: #161b22;
+        border-left: thick #e5a824;
+        background: #111c2e;
         padding: 1 2;
         margin: 0 0 1 0;
     }
     .claude-user-msg {
         height: auto;
-        border-left: thick #58a6ff;
-        background: #161f2c;
+        border-left: thick #00a8ea;
+        background: #111c2e;
         padding: 0 2;
         margin: 1 0;
     }
     .claude-thinking-msg {
         height: auto;
-        border-left: thick #d97757;
-        background: #1c1817;
-        color: #f0b89e;
+        border-left: thick #e5a824;
+        background: #161b22;
+        color: #f5d082;
         padding: 0 2;
         margin: 0 0 1 0;
     }
@@ -302,8 +302,8 @@ class PayPalPulseTUI(App):
     }
     .claude-assistant-card {
         height: auto;
-        border-left: thick #d97757;
-        background: #161b22;
+        border-left: thick #00a8ea;
+        background: #111c2e;
         padding: 1 2;
         margin: 0 0 1 0;
     }
@@ -322,13 +322,13 @@ class PayPalPulseTUI(App):
         width: auto;
         min-width: 14;
         margin: 0 1 0 0;
-        background: #21262d;
-        border: round #30363d;
+        background: #161b22;
+        border: round #21262d;
         color: #8b949e;
     }
     .claude-chip:hover {
-        color: #58a6ff;
-        border: round #58a6ff;
+        color: #e5a824;
+        border: round #e5a824;
     }
     #copilot-prompt-bar {
         height: auto;
@@ -338,7 +338,7 @@ class PayPalPulseTUI(App):
     #copilot-prompt-prefix {
         width: auto;
         padding: 0 1;
-        color: #d97757;
+        color: #e5a824;
         text-style: bold;
     }
     #copilot-prompt-bar Input {
@@ -459,7 +459,7 @@ class PayPalPulseTUI(App):
                             id="order-desc",
                         )
                         yield Button("Create Live Sandbox Order", variant="primary", id="btn-create-order")
-                        yield Button("🌐 Open in Browser", variant="default", id="btn-open-order-browser", disabled=True)
+                        yield Button("Open in Browser", variant="default", id="btn-open-order-browser", disabled=True)
                     yield RichLog(id="order-log", highlight=True, markup=True, wrap=True)
 
             with TabPane("[4] Disputes", id="tab-disputes"):
@@ -482,12 +482,12 @@ class PayPalPulseTUI(App):
                             id="btn-resolve-dispute",
                         )
                         yield Button(
-                            "⚡ Simulate Incoming Dispute",
+                            "Simulate Incoming Dispute",
                             variant="error",
                             id="btn-simulate-dispute",
                         )
                         yield Button(
-                            "🔄 Sync Sandbox API",
+                            "Sync Sandbox API",
                             variant="default",
                             id="btn-sync-disputes",
                         )
@@ -498,10 +498,7 @@ class PayPalPulseTUI(App):
                     yield Static(id="copilot-context-bar")
                     with VerticalScroll(id="copilot-chat-scroll"):
                         yield Static(
-                            "[bold #00a8ea]    ▄█▄  ▄█[/bold #00a8ea]   [bold #f0f6fc]Pulse AI Copilot[/bold #f0f6fc] [bold #00a8ea]ﮩ٨ـ⚡[/bold #00a8ea]\n"
-                            "[bold #00a8ea] ·▛·█▀█·█▀█·▜·[/bold #00a8ea]   [dim]Real-time financial telemetry intelligence (Groq LPU Engine)[/dim]\n"
-                            "[bold #00a8ea]──▜·[bold #f0f6fc]●···●[/bold #f0f6fc]·▛·──[/bold #00a8ea]   [dim]PayPal Sandbox Orders • Dispute Evidence • Git Telemetry[/dim]\n"
-                            "[bold #00a8ea]   ▘▘ ▀█▀ ▝▝[/bold #00a8ea]\n\n"
+                            "[bold #00a8ea]Pulse AI Copilot[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [dim]PayPal Financial Intelligence (Groq LPU Engine)[/dim]\n"
                             "Ask anything about your 30-day multi-currency ledger, release conversion velocity, "
                             "or German v1.2.1 buyer disputes — or instruct Pulse to mint live PayPal Sandbox orders & invoices.",
                             classes="claude-welcome-card",
@@ -559,7 +556,7 @@ class PayPalPulseTUI(App):
             overlay.display = is_too_small
             if is_too_small:
                 overlay.update(
-                    f"\n\n[bold red]⚠ TERMINAL VIEWPORT TOO SMALL[/bold red]\n\n"
+                    f"\n\n[bold red][ALERT] TERMINAL VIEWPORT TOO SMALL[/bold red]\n\n"
                     f"Current: [bold yellow]{event.size.width} cols × {event.size.height} rows[/bold yellow]\n"
                     f"Minimum: [bold green]80 cols × 24 rows[/bold green]\n\n"
                     f"[dim]Please expand your terminal window or decrease font size.[/dim]"
@@ -684,8 +681,8 @@ class PayPalPulseTUI(App):
         if open_cnt > 0:
             self.query_one("#dash-dispute-alert", Static).display = True
             self.query_one("#dash-dispute-alert", Static).update(
-                f"[bold #f85149]⚠ ACTION REQUIRED:[/bold #f85149] {open_cnt} open buyer disputes on release [bold #f0f6fc]v1.2.1 (DE)[/bold #f0f6fc] "
-                f"[dim]• Press 4 to inspect and auto-draft evidence with Pulse AI[/dim]"
+                f"[bold #f85149][ALERT] ACTION REQUIRED:[/bold #f85149] {open_cnt} open buyer disputes on release [bold #f0f6fc]v1.2.1 (DE)[/bold #f0f6fc] "
+                f"[bold #e5a824]•[/bold #e5a824] [dim]Press 4 to inspect and auto-draft evidence with Pulse AI[/dim]"
             )
         else:
             self.query_one("#dash-dispute-alert", Static).display = False
@@ -836,15 +833,15 @@ class PayPalPulseTUI(App):
             browser_btn = self.query_one("#btn-open-order-browser", Button)
             browser_btn.disabled = False
             log.write(
-                f"[bold green]✓ Live PayPal Sandbox Order Created![/bold green]\n"
+                f"[bold green][OK] Live PayPal Sandbox Order Created![/bold green]\n"
                 f"  • Order ID: [bold]{res.order_id}[/bold]\n"
                 f"  • Status: {res.status}\n"
                 f"  • Approval URL: [bold underline cyan]{res.approve_url}[/bold underline cyan]\n"
-                f"  [dim]👉 Click the '[bold]🌐 Open in Browser[/bold]' button above to checkout immediately![/dim]"
+                f"  [dim]Click 'Open in Browser' button above to checkout immediately.[/dim]"
             )
             self._populate_all()
         else:
-            log.write(f"[bold red]✗ Order creation failed:[/bold red] {res.error}")
+            log.write(f"[bold red][FAIL] Order creation failed:[/bold red] {res.error}")
 
     @on(Button.Pressed, "#btn-open-order-browser")
     def handle_open_order_browser(self) -> None:
@@ -859,7 +856,7 @@ class PayPalPulseTUI(App):
         log = self.query_one("#order-log", RichLog)
         btn = self.query_one("#btn-create-order", Button)
         btn.disabled = False
-        log.write(f"[bold red]✗ Order creation failed:[/bold red] {err}")
+        log.write(f"[bold red][FAIL] Order creation failed:[/bold red] {err}")
 
     @on(Button.Pressed, "#btn-resolve-dispute")
     @on(Input.Submitted, "#dispute-id-input")
@@ -912,7 +909,7 @@ class PayPalPulseTUI(App):
         btn = self.query_one("#btn-resolve-dispute", Button)
         btn.disabled = False
         log.write(
-            f"[bold green]✓ Dispute {dispute_id} Marked RESOLVED![/bold green]\n"
+            f"[bold green][OK] Dispute {dispute_id} Marked RESOLVED![/bold green]\n"
             f"  • Replacement Sandbox Order ID: [bold]{order_id}[/bold]\n"
             f"  • Engine: {model_used}\n"
             f"  • Evidence Draft:\n{evidence_text}"
@@ -923,7 +920,7 @@ class PayPalPulseTUI(App):
         log = self.query_one("#dispute-log", RichLog)
         btn = self.query_one("#btn-resolve-dispute", Button)
         btn.disabled = False
-        log.write(f"[bold red]✗ Dispute resolution failed:[/bold red] {err}")
+        log.write(f"[bold red][FAIL] Dispute resolution failed:[/bold red] {err}")
 
     @on(Button.Pressed, "#btn-simulate-dispute")
     def handle_simulate_dispute(self) -> None:
@@ -931,11 +928,11 @@ class PayPalPulseTUI(App):
         log = self.query_one("#dispute-log", RichLog)
         disp_id = sim_disp.get("dispute_id", "PP-D-SIM")
         log.write(
-            f"[bold #f85149]⚡ Simulated Real-World Chargeback Event:[/bold #f85149] [bold yellow]{disp_id}[/bold yellow]\n"
+            f"[bold #f85149][ALERT] Simulated Real-World Chargeback Event:[/bold #f85149] [bold yellow]{disp_id}[/bold yellow]\n"
             f"  • Claim: {sim_disp.get('description')}\n"
             f"  • Amount: {sim_disp.get('amount', 5.99):.2f} {sim_disp.get('currency', 'EUR')} ({sim_disp.get('platform_sku')})\n"
             f"  • Impact: CFO Merchant Health Index dynamically penalized; active dispute surge triggered!\n"
-            f"  [dim]👉 Input pre-filled with '{disp_id}'. Press 'Draft AI Evidence & Resolve' to remediate.[/dim]"
+            f"  [dim]Input pre-filled with '{disp_id}'. Press 'Draft AI Evidence & Resolve' to remediate.[/dim]"
         )
         self.query_one("#dispute-id-input", Input).value = disp_id
         self._populate_all()
@@ -964,19 +961,19 @@ class PayPalPulseTUI(App):
         if live_res.get("ok"):
             count = len(live_res.get("items", []))
             log.write(
-                f"[bold green]✓ PayPal Sandbox Disputes API Synced (HTTP 200 OK)[/bold green]\n"
+                f"[bold green][OK] PayPal Sandbox Disputes API Synced (HTTP 200 OK)[/bold green]\n"
                 f"  • Live Disputes from Sandbox: {count} ({added} new ingested into SQLite ledger)\n"
                 f"  • Real-Time Gateway Status: Connected"
             )
         else:
-            log.write(f"[yellow]⚠ Sandbox Disputes API returned:[/yellow] {live_res.get('error', 'No response')}")
+            log.write(f"[yellow][WARN] Sandbox Disputes API returned:[/yellow] {live_res.get('error', 'No response')}")
         self._populate_all()
 
     def _finish_sync_disputes_error(self, err: str) -> None:
         log = self.query_one("#dispute-log", RichLog)
         btn = self.query_one("#btn-sync-disputes", Button)
         btn.disabled = False
-        log.write(f"[bold red]✗ Dispute API sync failed:[/bold red] {err}")
+        log.write(f"[bold red][FAIL] Dispute API sync failed:[/bold red] {err}")
 
     @on(Button.Pressed, ".prompt-chip")
     def handle_prompt_chip(self, event: Button.Pressed) -> Worker[None] | None:
@@ -1039,14 +1036,14 @@ class PayPalPulseTUI(App):
             if res.created_invoice and res.created_invoice.success:
                 tool_name = "paypal.invoicing.create + paypal.orders.create"
             tool_widget = Static(
-                f"[bold #7ee787]⚡ Tool: {tool_name}[/bold #7ee787] -> {res.executed_action}",
+                f"[bold #7ee787][TOOL] {tool_name}[/bold #7ee787] -> {res.executed_action}",
                 classes="claude-tool-pill",
             )
             chat_scroll.mount(tool_widget)
             self._populate_all()
 
         sec = res.latency_ms / 1000.0
-        header = Text.from_markup("[bold #d97757]● Pulse[/bold #d97757]")
+        header = Text.from_markup("[bold #00a8ea]Pulse Copilot[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824]")
         footer = Text.from_markup(
             f"\n[dim]{sec:.2f}s • {res.tokens_per_sec:.0f} tok/s • PayPal Ledger + Release Telemetry[/dim]"
         )

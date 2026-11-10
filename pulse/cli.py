@@ -111,7 +111,7 @@ def cmd_auth(
     else:
         table.add_row(
             f"PayPal OAuth 2.0 ({auth_res.mode.upper()})",
-            "[bold red]✗ FAILED[/bold red]",
+            "[bold red][FAIL][/bold red]",
             f"Error: {auth_res.error}",
             f"{auth_res.latency_ms:.0f} ms",
         )
@@ -129,7 +129,7 @@ def cmd_auth(
     else:
         table.add_row(
             "Pulse AI Engine (Financial Intelligence)",
-            "[bold red]✗ DISCONNECTED[/bold red]",
+            "[bold red][DISCONNECTED][/bold red]",
             f"Error: {groq_res.error}",
             f"{groq_res.latency_ms:.0f} ms",
         )
@@ -234,7 +234,7 @@ def cmd_seed(
     )
     if inv_res.success and not json_output:
         console.print(
-            f"[green]✓ Created Live PayPal Sandbox Draft Invoice:[/green] [bold]{inv_res.invoice_id}[/bold] "
+            f"[green][OK] Created Live PayPal Sandbox Draft Invoice:[/green] [bold]{inv_res.invoice_id}[/bold] "
             f"($49.00 USD -> {inv_res.recipient_email})"
         )
 
@@ -276,7 +276,7 @@ def cmd_seed(
     else:
         console.print(
             Panel(
-                f"[bold green]✓ Dual-Engine SQLite Ledger Seeded Successfully![/bold green] (`{store.db_path}`)\n"
+                f"[bold green][OK] Dual-Engine SQLite Ledger Seeded Successfully![/bold green] (`{store.db_path}`)\n"
                 f"  • [bold]Releases Correlated:[/bold] `v1.1.0`, `v1.2.0 - Performance & Async Engine`, `v1.2.1 - EU Multi-Currency Tier`\n"
                 f"  • [bold]30-Day Gross Volume:[/bold] ${summary['total_gross_usd']:,.2f} USD across `USD`, `EUR`, `PHP`\n"
                 f"  • [bold]True Net Take-Home:[/bold] [bold green]${summary['total_net_usd']:,.2f} USD[/bold green] "
@@ -332,10 +332,10 @@ def cmd_pulse(
     if summary["open_disputes_count"] > 0:
         console.print(
             Panel(
-                f"[bold red]⚠ PROACTIVE DISPUTE ALERT:[/bold red] [bold]{summary['open_disputes_count']} Open Customer Disputes[/bold] "
-                f"detected on release [bold yellow]v1.2.1 - EU Multi-Currency Tier[/bold yellow] (Region: [bold]Germany / DE[/bold], Platform: [bold]Ubuntu Linux 24.04 (CLI)[/bold]).\n"
+                f"[bold #f85149][ALERT] PROACTIVE DISPUTE ALERT:[/bold #f85149] [bold]{summary['open_disputes_count']} Open Customer Disputes[/bold] "
+                f"detected on release [bold #e5a824]v1.2.1 - EU Multi-Currency Tier[/bold #e5a824] (Region: [bold]Germany / DE[/bold], Platform: [bold]Ubuntu Linux 24.04 (CLI)[/bold]).\n"
                 f"Run [bold cyan]pp disputes[/bold cyan] to inspect or [bold cyan]pp disputes --resolve PP-D-90411-DE[/bold cyan] to auto-draft Pulse AI evidence & issue a Sandbox replacement order.",
-                border_style="red",
+                border_style="#f85149",
             )
         )
 
@@ -421,7 +421,7 @@ def cmd_pulse(
         bar_len = max(1, int((float(d["net_usd"]) / max_net) * 24))
         bar_str = "█" * bar_len
         if int(d["disputes"]) > 0:
-            bar_str += f" [bold red]⚠ {d['disputes']} dispute[/bold red]"
+            bar_str += f" [bold #f85149][!] {d['disputes']} dispute[/bold #f85149]"
         chart_table.add_row(
             d["day_date"][5:],
             d["release_version"],
@@ -829,7 +829,7 @@ def cmd_order(
 
     console.print(
         Panel(
-            f"[bold green]✔ Live PayPal Sandbox Order Minted Successfully[/bold green]\n\n"
+            f"[bold green][OK] Live PayPal Sandbox Order Minted Successfully[/bold green]\n\n"
             f"[bold white]Order ID:[/bold white]     [yellow]{res.order_id}[/yellow]\n"
             f"[bold white]Amount:[/bold white]       [cyan]{res.amount:.2f} {res.currency}[/cyan]\n"
             f"[bold white]SKU / Tier:[/bold white]   {sku}\n"
@@ -876,7 +876,7 @@ def cmd_invoice(
 
     console.print(
         Panel(
-            f"[bold green]✔ Live PayPal Sandbox Draft Invoice Created[/bold green]\n\n"
+            f"[bold green][OK] Live PayPal Sandbox Draft Invoice Created[/bold green]\n\n"
             f"[bold white]Invoice ID:[/bold white]  [yellow]{res.invoice_id}[/yellow]\n"
             f"[bold white]Recipient:[/bold white]   {res.recipient_email}\n"
             f"[bold white]Amount:[/bold white]      [cyan]{res.amount:.2f} {res.currency}[/cyan]\n"
@@ -917,8 +917,8 @@ def cmd_ask(
     if res.executed_action:
         console.print(
             Panel(
-                f"[bold green]⚡ Live PayPal Sandbox Tool Executed:[/bold green] {res.executed_action}",
-                border_style="green",
+                f"[bold #00a8ea][TOOL][/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [bold green]Live PayPal Sandbox Action Executed:[/bold green] {res.executed_action}",
+                border_style="#0070ba",
             )
         )
 
@@ -926,8 +926,8 @@ def cmd_ask(
         Panel(
             Markdown(res.answer),
             title=(
-                f"[bold #00a8ea]Pulse[/bold #00a8ea] [bold #0070ba]ﮩ٨ـ⚡[/bold #0070ba] [bold #00a8ea]— PayPal Pulse AI Copilot[/bold #00a8ea] "
-                f"[dim](⚡ {res.tokens_per_sec:.0f} tok/s · {res.latency_ms / 1000:.2f}s)[/dim]"
+                f"[bold #00a8ea]Pulse AI Copilot[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] "
+                f"[dim]({res.tokens_per_sec:.0f} tok/s · {res.latency_ms / 1000:.2f}s)[/dim]"
             ),
             border_style="#0070ba",
         )
@@ -1005,7 +1005,7 @@ def cmd_trigger(
 
     console.print(
         Panel(
-            f"[bold green]✓ PayPal Webhook Event Ingested into Local Ledger[/bold green]\n\n"
+            f"[bold green][OK] PayPal Webhook Event Ingested into Local Ledger[/bold green]\n\n"
             f"  • [bold]Event Type:[/bold] [cyan]{event_payload.get('event_type')}[/cyan]\n"
             f"  • [bold]Event ID:[/bold] `{event_payload.get('id')}`\n"
             f"  • [bold]Simulated Amount:[/bold] {amount:.2f} {currency.upper()} ({sku})\n"
@@ -1070,10 +1070,8 @@ def cmd_demo(
     console.print()
     console.print(
         Panel(
-            "[bold #00a8ea]    ▄█▄  ▄█[/bold #00a8ea]   [bold #f0f6fc]Meet Pulse[/bold #f0f6fc] [bold #00a8ea]ﮩ٨ـ⚡[/bold #00a8ea]\n"
-            "[bold #00a8ea] ·▛·█▀█·█▀█·▜·[/bold #00a8ea]   [dim]Terminal-Native Financial Telemetry & AI Copilot for Modern SaaS[/dim]\n"
-            "[bold #00a8ea]──▜·[bold #f0f6fc]●···●[/bold #f0f6fc]·▛·──[/bold #00a8ea]   [dim]PayPal Sandbox Orders • Dispute Evidence • Git Telemetry[/dim]\n"
-            "[bold #00a8ea]   ▘▘ ▀█▀ ▝▝[/bold #00a8ea]\n\n"
+            "[bold #00a8ea]PayPal Pulse[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [bold #f0f6fc]Developer Onboarding Tour[/bold #f0f6fc]\n"
+            "[dim]Terminal-Native Financial Telemetry & AI Copilot for Modern SaaS[/dim]\n\n"
             "[bold #c9d1d9]You are viewing an isolated, zero-credential demo session.[/bold #c9d1d9]\n"
             "This walkthrough demonstrates how PayPal Pulse bridges rapid code deployments with real-time financial observability.",
             title="[bold #00a8ea]ONBOARDING WALKTHROUGH[/bold #00a8ea]",
@@ -1126,7 +1124,7 @@ def cmd_demo(
     )
 
     console.print("\n" + "=" * 70)
-    console.print("[bold green]✓ Onboarding walkthrough complete![/bold green]")
+    console.print("[bold green][OK] Onboarding walkthrough complete![/bold green]")
     console.print("[bold]Next action:[/bold]")
     console.print("  [bold cyan][1][/bold cyan] Launch Full-Screen Interactive Terminal Command Deck (`pp tui --demo`)")
     console.print("  [bold cyan][2][/bold cyan] Connect Live PayPal Sandbox Credentials (`pp setup`)")
@@ -1168,13 +1166,12 @@ def cmd_setup(
     console.print()
     console.print(
         Panel(
-            "[bold #00a8ea]    ▄█▄  ▄█[/bold #00a8ea]   [bold #f0f6fc]PayPal Pulse Setup Wizard[/bold #f0f6fc] [bold #00a8ea]ﮩ٨ـ⚡[/bold #00a8ea]\n"
-            "[bold #00a8ea] ·▛·█▀█·█▀█·▜·[/bold #00a8ea]   [dim]Configures live PayPal Sandbox REST credentials & Pulse AI[/dim]\n"
-            "[bold #00a8ea]──▜·[bold #f0f6fc]●···●[/bold #f0f6fc]·▛·──[/bold #00a8ea]   [dim]Saves verified credentials to ~/.pulse/config.json[/dim]\n"
-            "[bold #00a8ea]   ▘▘ ▀█▀ ▝▝[/bold #00a8ea]",
+            "[bold #00a8ea]PayPal Pulse[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [bold #f0f6fc]Credential Setup Wizard[/bold #f0f6fc]\n"
+            "[dim]Configure live PayPal Sandbox REST credentials & Pulse AI engine[/dim]\n"
+            "[dim]Saves verified credentials to ~/.pulse/config.json[/dim]",
             title="[bold #00a8ea]CREDENTIAL SETUP[/bold #00a8ea]",
             border_style="#0070ba",
-            padding=(0, 1),
+            padding=(0, 2),
         )
     )
 
@@ -1216,7 +1213,7 @@ def cmd_setup(
     auth_res = test_client.authenticate(force_refresh=True)
 
     if not auth_res.authenticated:
-        console_err.print(f"\n[bold red]✕ Authentication Failed:[/bold red] {auth_res.error}")
+        console_err.print(f"\n[bold red][FAIL] Authentication Failed:[/bold red] {auth_res.error}")
         console_err.print("[yellow]Please verify your Client ID and Secret in developer.paypal.com.[/yellow]")
         raise typer.Exit(code=EX_NOPERM)
 
@@ -1229,7 +1226,7 @@ def cmd_setup(
     )
 
     console.print(
-        f"\n[bold green]✓ Credentials Verified & Saved Successfully![/bold green]\n"
+        f"\n[bold green][OK] Credentials Verified & Saved Successfully![/bold green]\n"
         f"  • [bold]Target Config:[/bold] `{cfg_path}` (Permissions: 0600)\n"
         f"  • [bold]App ID:[/bold] `{auth_res.app_id}`\n"
         f"  • [bold]Latency:[/bold] {auth_res.latency_ms:.1f}ms\n"
@@ -1290,7 +1287,7 @@ def cmd_tui(
 
     tui_app = PayPalPulseTUI(demo_mode=demo)
     if check:
-        console.print("[bold green]✓ PayPalPulseTUI initialized and verified ready.[/bold green]")
+        console.print("[bold green][OK] PayPalPulseTUI initialized and verified ready.[/bold green]")
         return
     tui_app.run()
 

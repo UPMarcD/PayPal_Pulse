@@ -62,6 +62,46 @@ PAYPAL_COPILOT_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def strip_emojis(text: str) -> str:
+    """Normalize or strip emojis and problematic symbols that break Windows terminal rendering."""
+    if not text:
+        return text
+    # Replace numbered keycap emojis (1️⃣, 2️⃣, etc.) with clean ASCII list numbers
+    for i in range(10):
+        text = text.replace(f"{i}\ufe0f\u20e3", f"{i}.")
+        text = text.replace(f"{i}\u20e3", f"{i}.")
+    # Map common emojis to clean ASCII or terminal-safe tags
+    replacements = {
+        "⚡": "",
+        "⚠️": "[ALERT]",
+        "⚠": "[ALERT]",
+        "✅": "[OK]",
+        "✔": "[OK]",
+        "✓": "[OK]",
+        "❌": "[FAIL]",
+        "✗": "[FAIL]",
+        "✕": "[FAIL]",
+        "👉": "->",
+        "🌐": "",
+        "📊": "",
+        "🚀": "",
+        "💡": "",
+        "✨": "",
+        "🔄": "",
+        "👋": "",
+        "⌨": "",
+        "ﮩ٨ـ": "",
+        "ﮩ": "",
+        "٨": "",
+        "ـ": "",
+    }
+    for glyph, rep in replacements.items():
+        text = text.replace(glyph, rep)
+    # Strip remaining multi-byte emoji code points in high surrogate ranges
+    emoji_pattern = re.compile(r"[\U00010000-\U0010ffff]", flags=re.UNICODE)
+    return emoji_pattern.sub("", text)
+
+
 def get_active_groq_model(settings: PulseSettings | None = None) -> str:
     """Return the active verified inference model or configured default."""
     if _ACTIVE_GROQ_MODEL:
@@ -269,6 +309,11 @@ APP IDENTITY:
 
 Answer with direct, high-signal, developer-friendly precision. Always cite exact numbers, version tags, platform environments, fee percentages, and real PayPal Sandbox IDs from the telemetry below.
 Formatting rule for terminal display: Prefer concise bulleted lists or compact 3-column tables (under 80 characters wide) so output never wraps or clips on narrow terminal windows.
+
+STRICT TYPOGRAPHY & ZERO-EMOJI MANDATE:
+- CRITICAL: ABSOLUTELY NEVER output emoji characters, emoji numbers (such as 1️⃣, 2️⃣, 3️⃣), emoticons, or Unicode pictographs (⚡, ⚠️, 🚀, 📊, 👉, 🌐, ✅, ❌, etc.). Windows PowerShell and standard terminal emulators fail to render these, resulting in broken tofu boxes and misaligned text.
+- Always use standard ASCII markdown lists ("1.", "2.", "-") or uppercase text tags ("[ALERT]", "[OK]", "[INFO]").
+- Terminal Theme: Pulse uses a Muted PayPal Navy-Slate palette (#0a101d canvas, #111c2e panels, #1c2e4a borders) with PayPal Cyan/Blue (#00a8ea) headers and Muted PayPal Gold (#e5a824) accents for bullet points, active tabs, and highlights.
 
 AVAILABLE CLI COMMANDS & SYNTAX:
 When recommending or demonstrating CLI commands to the user, you must ONLY suggest these exact existing commands:
@@ -509,7 +554,7 @@ def ask_copilot(
                 answer_text = f"Action completed on PayPal Sandbox: {executed_action}."
 
             return CopilotAnswer(
-                answer=answer_text,
+                answer=strip_emojis(answer_text),
                 model_used=model_used,
                 latency_ms=latency_ms,
                 tokens_per_sec=tokens_per_sec,
@@ -520,7 +565,7 @@ def ask_copilot(
         except Exception as exc:
             fallback_text = _build_deterministic_fallback(question, summary, created_order, str(exc))
             return CopilotAnswer(
-                answer=fallback_text,
+                answer=strip_emojis(fallback_text),
                 model_used="local-deterministic-fallback",
                 latency_ms=5.0,
                 tokens_per_sec=450.0,
@@ -531,7 +576,7 @@ def ask_copilot(
 
     fallback_text = _build_deterministic_fallback(question, summary, created_order, "No GROQ_API_KEY")
     return CopilotAnswer(
-        answer=fallback_text,
+        answer=strip_emojis(fallback_text),
         model_used="local-deterministic-fallback",
         latency_ms=2.0,
         tokens_per_sec=480.0,

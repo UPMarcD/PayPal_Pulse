@@ -342,25 +342,26 @@ def test_cli_order_unconfigured_ex_config(tmp_path):
         assert "PAYPAL_CLIENT_ID not configured" in res.output
 
 
-def test_pulse_mascot_sprites_and_headers():
-    """Verify Pulsey mascot sprites and stateful headers render without error."""
-    from pulse.mascot import (
-        PULSE_GLYPH,
-        PULSE_MASCOT_ALERT,
-        PULSE_MASCOT_IDLE,
-        PULSE_MASCOT_SUCCESS,
-        PULSE_MASCOT_THINK,
-        format_mascot_header,
-    )
+def test_emoji_free_terminal_standards_and_muted_yellow_accents():
+    """Verify clean emoji-free typography, strip_emojis sanitization, and muted yellow accents."""
+    from pulse.ai_copilot import strip_emojis
+    from pulse.tui import PayPalPulseTUI
 
-    for sprite in (PULSE_MASCOT_IDLE, PULSE_MASCOT_THINK, PULSE_MASCOT_SUCCESS, PULSE_MASCOT_ALERT):
-        assert "▀█▀" in sprite
-        assert "·▛·" in sprite
-    assert "ﮩ٨ـ⚡" in PULSE_GLYPH
-    for state in ("idle", "think", "success", "alert"):
-        hdr = format_mascot_header("Test Title", "Test Subtitle", state=state)
-        assert "Test Title" in hdr
-        assert "·▛·" in hdr
+    # Test strip_emojis sanitizes broken glyphs and keycap emojis
+    raw_text = "Quick examples\n# 1️⃣ Current KPI snapshot\n# 2️⃣ Export ledger\n⚡ Live tool\n⚠️ Alert\nﮩ٨ـ pulse"
+    cleaned = strip_emojis(raw_text)
+    assert "1." in cleaned
+    assert "2." in cleaned
+    assert "1️⃣" not in cleaned
+    assert "2️⃣" not in cleaned
+    assert "⚡" not in cleaned
+    assert "⚠️" not in cleaned
+    assert "ﮩ٨ـ" not in cleaned
+    assert "[ALERT]" in cleaned
+
+    # Verify TUI CSS enforces muted PayPal yellow accent (#e5a824) and navy canvas
+    assert "#e5a824" in PayPalPulseTUI.CSS
+    assert "#0a101d" in PayPalPulseTUI.CSS
 
 
 
