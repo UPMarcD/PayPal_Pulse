@@ -24,6 +24,43 @@ FALLBACK_MODELS = [
 
 _ACTIVE_GROQ_MODEL: str | None = None
 
+PAYPAL_COPILOT_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_paypal_order",
+            "description": "Mint a live PayPal checkout order for a software license or digital SaaS subscription.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "Numeric price to charge, e.g. 14.99"},
+                    "currency": {"type": "string", "enum": ["USD", "EUR", "PHP", "GBP"], "description": "Currency code"},
+                    "description": {"type": "string", "description": "Item description or license title"},
+                    "sku": {"type": "string", "description": "Platform SKU or tier, e.g. PulseCore Pro"},
+                },
+                "required": ["amount", "currency"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_paypal_invoice",
+            "description": "Create a live PayPal draft invoice to bill a partner, client, or enterprise user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient_email": {"type": "string", "description": "Recipient email address"},
+                    "amount": {"type": "number", "description": "Invoice total amount"},
+                    "currency": {"type": "string", "enum": ["USD", "EUR", "PHP", "GBP"], "description": "Currency code"},
+                    "item_name": {"type": "string", "description": "Description of the software or service"},
+                },
+                "required": ["recipient_email", "amount", "currency"],
+            },
+        },
+    },
+]
+
 
 def get_active_groq_model(settings: PulseSettings | None = None) -> str:
     """Return the active verified inference model or configured default."""
@@ -115,7 +152,16 @@ def verify_groq_connection(settings: PulseSettings | None = None, timeout: float
 
 def _detect_order_intent(question: str) -> tuple[bool, float, str, str]:
     """Detect if the user is asking Pulse to generate/create a live PayPal order, invoice, or checkout link."""
-    q_lower = question.lower()
+    q_lower = question.lower().strip()
+
+    # Guard: Ignore purely interrogative or explanatory inquiries (e.g. "How do I make an order?", "Explain how to issue an invoice")
+    interrogative_prefix = re.compile(
+        r"^(how\s+(?:do|to|can|should|would)|what\s+(?:is|are|happens|does)|why\s+(?:do|is|are|should)|explain\s+how|can\s+you\s+explain)\b",
+        re.IGNORECASE,
+    )
+    if interrogative_prefix.search(q_lower):
+        return False, 0.0, "USD", ""
+
     intent_regex = re.compile(
         r"\b(create|generate|make|issue|mint|build)\b.*\b(order|checkout|payment\s+link|invoice|link)\b"
     )
@@ -214,7 +260,13 @@ def build_financial_context_prompt(
         else ""
     )
 
-    return f"""You are Pulse (PayPal Pulse AI), an expert financial telemetry & release intelligence assistant for an indie software business ("PulseCore Pro" - desktop utilities, micro-SaaS, and developer tools).
+    return f"""You are Pulse (PayPal Pulse AI), the financial copilot built into PayPal Pulse (`pp`).
+APP IDENTITY:
+- This tool/CLI is **PayPal Pulse (`pp`)**: A terminal-native financial telemetry command deck and AI copilot built for independent developers, modern SaaS founders, and software creators to monitor real-time PayPal Sandbox/Live transactions, observe fee drag, correlate Git releases to revenue, resolve buyer disputes, and mint orders via CLI/TUI.
+- In this environment, PayPal Pulse is currently monitoring the financial telemetry of **PulseCore Pro** (a sample developer SaaS business selling software licenses across releases v1.1.0, v1.2.0, and v1.2.1).
+- If the user asks what this app / this tool / this CLI is for: Answer that it is PayPal Pulse (`pp`), the terminal financial telemetry deck and AI copilot for modern software creators.
+- If the user asks about the underlying business / software product being tracked: Describe PulseCore Pro and its sales/dispute metrics.
+
 Answer with direct, high-signal, developer-friendly precision. Always cite exact numbers, version tags, platform environments, fee percentages, and real PayPal Sandbox IDs from the telemetry below.
 Formatting rule for terminal display: Prefer concise bulleted lists or compact 3-column tables (under 80 characters wide) so output never wraps or clips on narrow terminal windows.
 
@@ -249,8 +301,9 @@ def _call_groq_chat(
     temperature: float = 0.2,
     max_tokens: int = 4096,
     timeout: float = 30.0,
-) -> tuple[str, str, float, float]:
-    """Call OpenAI-compatible chat completions endpoint with automatic model fallback and active model caching."""
+    tools: list[dict[str, Any]] | None = None,
+) -> tuple[str, str, float, float, list[dict[str, Any]]]:
+    """Call OpenAI-compatible chat completions endpoint with automatic model fallback, tool calling, and active model caching."""
     global _ACTIVE_GROQ_MODEL
     preferred = _ACTIVE_GROQ_MODEL or settings.groq_model
     models_to_try = [preferred] + [
@@ -270,35 +323,39 @@ def _call_groq_chat(
         for model_name in ordered_models:
             try:
                 req_start = time.perf_counter()
+                payload: dict[str, Any] = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if tools:
+                    payload["tools"] = tools
+                    payload["tool_choice"] = "auto"
+
                 resp = client.post(
                     f"{GROQ_BASE_URL}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {settings.groq_api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": model_name,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
+                    json=payload,
                 )
                 latency_ms = round((time.perf_counter() - req_start) * 1000, 1)
                 if resp.status_code == 200:
                     data = resp.json()
-                    content = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                        .strip()
-                    )
-                    if content:
+                    choice = data.get("choices", [{}])[0]
+                    message = choice.get("message", {})
+                    content = (message.get("content") or "").strip()
+                    tool_calls = message.get("tool_calls") or []
+
+                    if content or tool_calls:
                         _ACTIVE_GROQ_MODEL = model_name
                         usage = data.get("usage") or {}
                         comp_tokens = int(usage.get("completion_tokens") or max(1, len(content) // 4))
                         comp_time = float(usage.get("completion_time") or max(0.001, latency_ms / 1000.0))
                         tokens_per_sec = round(comp_tokens / max(0.001, comp_time), 1)
-                        return content, model_name, latency_ms, tokens_per_sec
+                        return content, model_name, latency_ms, tokens_per_sec, tool_calls
                 last_err = f"HTTP {resp.status_code}: {resp.text[:200]}"
             except Exception as exc:
                 last_err = str(exc)
@@ -355,20 +412,20 @@ def ask_copilot(
                     f"Created live PayPal Sandbox Draft Invoice {inv_res.invoice_id} "
                     f"for {amt:.2f} {cur} to {recipient_email}"
                 )
-
-        order_res = pp.create_order(
-            amount=amt,
-            currency=cur,
-            description=desc,
-            custom_id="v1.2.1|PULSE_AI",
-        )
-        if order_res.success:
-            st.record_live_order(order_res, release_version="v1.2.1", country_code="US")
-            created_order = order_res
-            action_parts.append(
-                f"Created live PayPal Sandbox Order {order_res.order_id} "
-                f"for {amt:.2f} {cur} ({order_res.approve_url})"
+        else:
+            order_res = pp.create_order(
+                amount=amt,
+                currency=cur,
+                description=desc,
+                custom_id="v1.2.1|PULSE_AI",
             )
+            if order_res.success:
+                st.record_live_order(order_res, release_version="v1.2.1", country_code="US")
+                created_order = order_res
+                action_parts.append(
+                    f"Created live PayPal Sandbox Order {order_res.order_id} "
+                    f"for {amt:.2f} {cur} ({order_res.approve_url})"
+                )
 
         if action_parts:
             executed_action = " | ".join(action_parts)
@@ -387,7 +444,45 @@ def ask_copilot(
 
     if cfg.has_groq_credentials:
         try:
-            answer_text, model_used, latency_ms, tokens_per_sec = _call_groq_chat(messages, cfg)
+            answer_text, model_used, latency_ms, tokens_per_sec, tool_calls = _call_groq_chat(
+                messages, cfg, tools=PAYPAL_COPILOT_TOOLS
+            )
+            # If model returned structured function tool calls, execute them safely
+            if tool_calls and cfg.has_paypal_credentials:
+                action_parts = [executed_action] if executed_action else []
+                for tc in tool_calls:
+                    fn_name = tc.get("function", {}).get("name", "")
+                    raw_args = tc.get("function", {}).get("arguments", "{}")
+                    try:
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        args = {}
+
+                    if fn_name == "create_paypal_order" and not created_order:
+                        tc_amt = float(args.get("amount", 9.99))
+                        tc_cur = str(args.get("currency", "USD")).upper()
+                        tc_desc = args.get("description", f"Pulse AI Order ({tc_cur} {tc_amt:.2f})")
+                        o_res = pp.create_order(amount=tc_amt, currency=tc_cur, description=tc_desc)
+                        if o_res.success:
+                            st.record_live_order(o_res, release_version="v1.2.1", country_code="US")
+                            created_order = o_res
+                            action_parts.append(f"LLM Tool Call: Created Order {o_res.order_id} ({tc_amt:.2f} {tc_cur})")
+                    elif fn_name == "create_paypal_invoice" and not created_invoice:
+                        tc_amt = float(args.get("amount", 19.99))
+                        tc_cur = str(args.get("currency", "USD")).upper()
+                        tc_email = args.get("recipient_email", "partner@example.com")
+                        tc_item = args.get("item_name", "Developer Consulting License")
+                        i_res = pp.create_draft_invoice(item_name=tc_item, amount=tc_amt, currency=tc_cur, recipient_email=tc_email)
+                        if i_res.success:
+                            created_invoice = i_res
+                            action_parts.append(f"LLM Tool Call: Created Invoice {i_res.invoice_id} ({tc_amt:.2f} {tc_cur})")
+
+                if action_parts:
+                    executed_action = " | ".join(action_parts)
+
+            if not answer_text and executed_action:
+                answer_text = f"Action completed on PayPal Sandbox: {executed_action}."
+
             return CopilotAnswer(
                 answer=answer_text,
                 model_used=model_used,
@@ -454,7 +549,7 @@ def draft_dispute_evidence(
 
     if cfg.has_groq_credentials:
         try:
-            text, model_used, _, _ = _call_groq_chat(
+            text, model_used, _, _, _ = _call_groq_chat(
                 [
                     {
                         "role": "system",
