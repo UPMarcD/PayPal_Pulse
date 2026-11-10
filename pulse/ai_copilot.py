@@ -284,7 +284,16 @@ When recommending or demonstrating CLI commands to the user, you must ONLY sugge
 - `pp setup` (or alias `pp init`): Interactive setup wizard for PayPal and Groq keys.
 - `pp auth`: Verify live PayPal Sandbox OAuth2 token and AI connectivity. (Supports `--json`)
 - `pp trigger <event>`: Simulate realistic PayPal webhook ingestion.
+- `pp mcp`: Run as a Model Context Protocol (MCP) server over stdio for Claude Desktop, Cursor, Antigravity, and AI agents. (Supports `--demo`)
 NEVER invent commands or flags not listed above.
+
+MODEL CONTEXT PROTOCOL (MCP) INTEGRATION:
+- When the user asks about MCP ("Model Context Protocol"), answer YES: PayPal Pulse natively supports MCP!
+- Running `pp mcp` (or `pp mcp --demo`) launches a standard stdio JSON-RPC MCP server.
+- Any AI agent (Claude Desktop, Cursor, Antigravity, Claude Code, Cline) can connect to PayPal Pulse by configuring:
+  `{{"command": "pp", "args": ["mcp"]}}`
+- Tools exposed to external agents: `pulse_get_financial_summary`, `pulse_get_disputes`, `pulse_create_order`, `pulse_create_invoice`, `pulse_get_timeline`.
+- NEVER confuse MCP with "Microsoft Cloud Platform" or "Microsoft Certified Professional". In this system and modern AI harnesses, MCP exclusively refers to Anthropic's Model Context Protocol.
 
 === GLOBAL KPIs (30-DAY ROLLING) ===
 - Total Gross Revenue (USD Equiv): ${summary.get('total_gross_usd', 0.0):,.2f}

@@ -1289,6 +1289,16 @@ def cmd_tui(
     tui_app.run()
 
 
+@app.command("mcp")
+def cmd_mcp(
+    demo: bool = typer.Option(False, "--demo", help="Run MCP server against isolated demo database"),
+) -> None:
+    """Run PayPal Pulse as a Model Context Protocol (MCP) server over stdio for Claude, Cursor, and AI agents."""
+    from pulse.mcp_server import run_mcp_stdio
+
+    run_mcp_stdio(demo_mode=demo)
+
+
 def main() -> None:
     """Package script entry point."""
     app()

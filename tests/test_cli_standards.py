@@ -276,3 +276,55 @@ def test_cli_ledger_csv_export(tmp_path):
         assert "paypal_id,created_at,gross_amount" in res.stdout
         assert "PP-TXN-" in res.stdout
 
+
+def test_mcp_server_protocol_lifecycle(tmp_path):
+    """Test standard JSON-RPC 2.0 initialize, tools/list, and tool execution."""
+    import io
+    from pulse.mcp_server import run_mcp_stdio
+
+    db_file = tmp_path / "test_mcp.db"
+    store = PulseStore(db_file)
+    store.seed_telemetry()
+
+    requests = [
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "pulse_get_financial_summary", "arguments": {}},
+        }),
+    ]
+    input_stream = io.StringIO("\n".join(requests) + "\n")
+    output_stream = io.StringIO()
+
+    with patch("pulse.mcp_server.get_settings") as mock_get, \
+         patch("sys.stdin", input_stream), \
+         patch("sys.stdout", output_stream), \
+         patch("sys.stderr", io.StringIO()):
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="mock_id",
+            paypal_client_secret="mock_secret",
+            groq_api_key="mock_groq",
+            cache_dir=tmp_path,
+        )
+        run_mcp_stdio(demo_mode=True)
+
+    output_lines = [json.loads(line) for line in output_stream.getvalue().splitlines() if line.strip()]
+    assert len(output_lines) == 3
+    # 1. Initialize
+    assert output_lines[0]["id"] == 1
+    assert output_lines[0]["result"]["serverInfo"]["name"] == "paypal-pulse"
+    # 2. Tools list
+    assert output_lines[1]["id"] == 2
+    tool_names = [t["name"] for t in output_lines[1]["result"]["tools"]]
+    assert "pulse_get_financial_summary" in tool_names
+    assert "pulse_create_order" in tool_names
+    # 3. Tool call
+    assert output_lines[2]["id"] == 3
+    assert output_lines[2]["result"]["isError"] is False
+    summary_data = json.loads(output_lines[2]["result"]["content"][0]["text"])
+    assert "total_gross_usd" in summary_data
+
+
