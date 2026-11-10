@@ -620,13 +620,19 @@ class PayPalPulseTUI(App):
         )
 
     def _update_auth_banner(self, auth: PayPalAuthResult | None, open_disputes_count: int | None = None) -> None:
+        term_width = self.size.width if self.size.width > 0 else 120
+        is_wide = term_width >= 110
+
         if self.demo_mode:
-            sb_badge = "[bold #d29922]●[/bold #d29922] [bold #e3b341]DEMO MODE (Sample Telemetry)[/bold #e3b341]"
+            sb_badge = "[bold #d29922]●[/bold #d29922] [bold #e3b341]Demo Mode[/bold #e3b341]"
         elif auth is None:
             sb_badge = "[bold #58a6ff]●[/bold #58a6ff] [bold #c9d1d9]Sandbox: Connecting...[/bold #c9d1d9]"
         elif auth.authenticated:
-            lat_str = f"{auth.latency_ms / 1000:.1f}s" if auth.latency_ms >= 1000 else f"{auth.latency_ms:.0f}ms"
-            sb_badge = f"[#3fb950]●[/#3fb950] [bold #c9d1d9]Sandbox: Connected[/bold #c9d1d9] [dim]({lat_str})[/dim]"
+            if is_wide:
+                lat_str = f"{auth.latency_ms / 1000:.1f}s" if auth.latency_ms >= 1000 else f"{auth.latency_ms:.0f}ms"
+                sb_badge = f"[#3fb950]●[/#3fb950] [bold #c9d1d9]Sandbox: Live[/bold #c9d1d9] [dim]({lat_str})[/dim]"
+            else:
+                sb_badge = "[#3fb950]●[/#3fb950] [bold #c9d1d9]Sandbox: Live[/bold #c9d1d9]"
         else:
             sb_badge = "[#8b949e]●[/#8b949e] [bold #c9d1d9]Sandbox: Offline[/bold #c9d1d9]"
 
@@ -643,17 +649,24 @@ class PayPalPulseTUI(App):
 
         left_content = (
             f" {sb_badge}  [dim]│[/dim]  "
-            f"[dim]Health:[/dim] [bold #58a6ff]{score_val}/100[/bold #58a6ff] [dim]({rating_str})[/dim]  [dim]│[/dim]  "
             f"[dim]Ledger:[/dim] [bold #c9d1d9]30d Synced[/bold #c9d1d9]"
         )
-        right_content = (
-            f"[dim]Releases:[/dim] [bold #c9d1d9]v1.1.0..v1.2.1[/bold #c9d1d9]  [dim]│[/dim]  "
-            f"[dim]Disputes:[/dim] {disp_status} "
-        )
+
+        if is_wide:
+            right_content = (
+                f"[dim]Health:[/dim] [bold #58a6ff]{score_val}/100[/bold #58a6ff] [dim]({rating_str})[/dim]  [dim]│[/dim]  "
+                f"[dim]Releases:[/dim] [bold #c9d1d9]v1.1.0..v1.2.1[/bold #c9d1d9]  [dim]│[/dim]  "
+                f"[dim]Disputes:[/dim] {disp_status} "
+            )
+        else:
+            right_content = (
+                f"[dim]Health:[/dim] [bold #58a6ff]{score_val}/100[/bold #58a6ff]  [dim]│[/dim]  "
+                f"[dim]Disputes:[/dim] {disp_status} "
+            )
 
         grid = Table.grid(expand=True)
-        grid.add_column(justify="left", ratio=1)
-        grid.add_column(justify="right", ratio=1)
+        grid.add_column(justify="left", no_wrap=True)
+        grid.add_column(justify="right", no_wrap=True)
         grid.add_row(left_content, right_content)
 
         for bar_id in ("#global-context-bar", "#copilot-context-bar"):
