@@ -10,7 +10,7 @@ from rich.console import Group
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -291,6 +291,18 @@ class PayPalPulseTUI(App):
         min-width: 14;
         margin: 0;
     }
+    #resize-warning-overlay {
+        display: none;
+        dock: top;
+        layer: overlay;
+        width: 100%;
+        height: 100%;
+        background: #0d1117;
+        color: #f85149;
+        content-align: center middle;
+        text-align: center;
+        border: heavy #f85149;
+    }
     """
 
     BINDINGS = [
@@ -301,6 +313,9 @@ class PayPalPulseTUI(App):
         Binding("o", "switch_tab('tab-orders')", "Orders"),
         Binding("x", "switch_tab('tab-disputes')", "Disputes"),
         Binding("a", "switch_tab('tab-copilot')", "Pulse AI"),
+        Binding("L", "switch_to_live", "Live Setup", show=True),
+        Binding("j", "vim_down", "Down", show=False),
+        Binding("k", "vim_up", "Up", show=False),
     ]
 
     def __init__(
@@ -308,9 +323,13 @@ class PayPalPulseTUI(App):
         settings: PulseSettings | None = None,
         store: PulseStore | None = None,
         pp_client: PayPalClient | None = None,
+        demo_mode: bool = False,
     ) -> None:
         super().__init__()
-        self.settings = settings or get_settings()
+        self.settings = settings or get_settings(demo_mode=demo_mode)
+        if demo_mode:
+            self.settings.demo_mode = True
+        self.demo_mode = self.settings.demo_mode
         self.store = store or PulseStore(self.settings.db_path)
         if not self.store.is_seeded():
             self.store.seed_telemetry()
@@ -319,9 +338,21 @@ class PayPalPulseTUI(App):
         self._git_tags_loaded: bool = False
         self._turn_counter: int = 0
         self._last_order_approve_url: str | None = None
+        if self.demo_mode:
+            self.SUB_TITLE = "DEMO MODE (Sample Telemetry) — Press 'L' for Live Setup"
+
+    def action_switch_to_live(self) -> None:
+        """Inform user how to connect live PayPal credentials."""
+        self.notify(
+            "To connect live PayPal Sandbox credentials, exit the TUI (press 'q') and run 'pp setup'.",
+            title="Switch to Live Mode",
+            severity="information",
+            timeout=8.0,
+        )
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield Static(id="resize-warning-overlay")
         yield Static(id="global-context-bar")
         with TabbedContent(initial="tab-dashboard", id="main-tabs"):
             with TabPane("[1] Dashboard", id="tab-dashboard"):
@@ -447,6 +478,58 @@ class PayPalPulseTUI(App):
         dispute_log.write(
             "[dim]Enter a Dispute ID (e.g. `PP-D-90411-DE`) above and press Enter to generate Pulse AI evidence and a replacement Sandbox order.[/dim]"
         )
+        # Check background updates (such as pp trigger) every 3 seconds
+        self.set_interval(3.0, self.action_refresh_data)
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Protect layout and show minimum-dimension warning on viewports below 80x24."""
+        is_too_small = event.size.width < 80 or event.size.height < 24
+        try:
+            overlay = self.query_one("#resize-warning-overlay", Static)
+            overlay.display = is_too_small
+            if is_too_small:
+                overlay.update(
+                    f"\n\n[bold red]⚠ TERMINAL VIEWPORT TOO SMALL[/bold red]\n\n"
+                    f"Current: [bold yellow]{event.size.width} cols × {event.size.height} rows[/bold yellow]\n"
+                    f"Minimum: [bold green]80 cols × 24 rows[/bold green]\n\n"
+                    f"[dim]Please expand your terminal window or decrease font size.[/dim]"
+                )
+        except Exception:
+            pass
+
+    def action_vim_down(self) -> None:
+        """Scroll active table down with Vim 'j' if input field is not active."""
+        if self.focused and isinstance(self.focused, Input):
+            return
+        active_tab = self.query_one("#main-tabs", TabbedContent).active
+        table_id = (
+            "#currency-table"
+            if active_tab == "tab-dashboard"
+            else ("#timeline-table" if active_tab == "tab-timeline" else ("#disputes-table" if active_tab == "tab-disputes" else None))
+        )
+        if table_id:
+            try:
+                tbl = self.query_one(table_id, DataTable)
+                tbl.action_cursor_down()
+            except Exception:
+                pass
+
+    def action_vim_up(self) -> None:
+        """Scroll active table up with Vim 'k' if input field is not active."""
+        if self.focused and isinstance(self.focused, Input):
+            return
+        active_tab = self.query_one("#main-tabs", TabbedContent).active
+        table_id = (
+            "#currency-table"
+            if active_tab == "tab-dashboard"
+            else ("#timeline-table" if active_tab == "tab-timeline" else ("#disputes-table" if active_tab == "tab-disputes" else None))
+        )
+        if table_id:
+            try:
+                tbl = self.query_one(table_id, DataTable)
+                tbl.action_cursor_up()
+            except Exception:
+                pass
 
     def _setup_tables(self) -> None:
         cur_table = self.query_one("#currency-table", DataTable)
@@ -465,7 +548,9 @@ class PayPalPulseTUI(App):
         )
 
     def _update_auth_banner(self, auth: PayPalAuthResult | None, open_disputes_count: int | None = None) -> None:
-        if auth is None:
+        if self.demo_mode:
+            sb_badge = "[bold #d29922]●[/bold #d29922] [bold #e3b341]DEMO MODE (Sample Telemetry)[/bold #e3b341]"
+        elif auth is None:
             sb_badge = "[bold #58a6ff]●[/bold #58a6ff] [bold #c9d1d9]Sandbox: Connecting...[/bold #c9d1d9]"
         elif auth.authenticated:
             lat_str = f"{auth.latency_ms / 1000:.1f}s" if auth.latency_ms >= 1000 else f"{auth.latency_ms:.0f}ms"
