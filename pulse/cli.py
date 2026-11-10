@@ -148,6 +148,11 @@ def cmd_auth(
 
 @app.command("seed")
 def cmd_seed(
+    demo: bool = typer.Option(
+        False,
+        "--demo",
+        help="Seed the isolated demo database (.pulse_cache/demo.db)",
+    ),
     json_output: bool = typer.Option(
         False,
         "--json",
@@ -155,7 +160,7 @@ def cmd_seed(
     ),
 ) -> None:
     """Create real live Orders/Invoices on PayPal Sandbox and seed 30 days of software telemetry."""
-    settings = get_settings()
+    settings = get_settings(demo_mode=demo)
     pp_client = PayPalClient(settings)
     store = PulseStore(settings.db_path)
 
