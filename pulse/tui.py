@@ -30,6 +30,7 @@ from textual.worker import Worker
 
 from pulse.ai_copilot import CopilotAnswer, ask_copilot, draft_dispute_evidence, get_active_groq_model
 from pulse.config import PulseSettings, get_settings
+from pulse.mascot import format_mascot_header
 from pulse.paypal_client import PayPalAuthResult, PayPalClient
 from pulse.store import PulseStore
 
@@ -498,8 +499,12 @@ class PayPalPulseTUI(App):
                     yield Static(id="copilot-context-bar")
                     with VerticalScroll(id="copilot-chat-scroll"):
                         yield Static(
-                            "[bold #00a8ea]Pulse AI Copilot[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [dim]PayPal Financial Intelligence (Groq LPU Engine)[/dim]\n"
-                            "Ask anything about your 30-day multi-currency ledger, release conversion velocity, "
+                            format_mascot_header(
+                                title="Pulse AI Copilot",
+                                subtitle="Real-time Financial Telemetry & PayPal Sandbox Bridge",
+                                state="idle",
+                            )
+                            + "\n\nAsk anything about your 30-day multi-currency ledger, release conversion velocity, "
                             "or German v1.2.1 buyer disputes — or instruct Pulse to mint live PayPal Sandbox orders & invoices.",
                             classes="claude-welcome-card",
                         )

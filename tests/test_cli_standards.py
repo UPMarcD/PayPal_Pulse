@@ -364,5 +364,34 @@ def test_emoji_free_terminal_standards_and_muted_yellow_accents():
     assert "#0a101d" in PayPalPulseTUI.CSS
 
 
+def test_pulse_mascot_sprites_and_headers():
+    """Verify Pulsey mascot sprites and stateful headers render without error and without glitch characters."""
+    from pulse.mascot import (
+        PULSE_GLYPH,
+        PULSE_MASCOT_ALERT,
+        PULSE_MASCOT_IDLE,
+        PULSE_MASCOT_SUCCESS,
+        PULSE_MASCOT_THINK,
+        format_mascot_header,
+    )
+
+    for sprite in (PULSE_MASCOT_IDLE, PULSE_MASCOT_THINK, PULSE_MASCOT_SUCCESS, PULSE_MASCOT_ALERT):
+        assert "▀█▀" in sprite
+        assert "·▛·" in sprite
+        assert "ﮩ٨ـ" not in sprite
+        assert "⚡" not in sprite
+
+    assert "ﮩ٨ـ" not in PULSE_GLYPH
+    assert "⚡" not in PULSE_GLYPH
+    assert "Pulse" in PULSE_GLYPH
+
+    for state in ("idle", "think", "success", "alert"):
+        hdr = format_mascot_header("Test Title", "Test Subtitle", state=state)
+        assert "Test Title" in hdr
+        assert "·▛·" in hdr
+        assert "ﮩ٨ـ" not in hdr
+        assert "⚡" not in hdr
+
+
 
 

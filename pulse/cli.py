@@ -30,6 +30,7 @@ from pulse.config import (
     save_global_config,
 )
 from pulse.constants import EX_CONFIG, EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
+from pulse.mascot import format_mascot_header
 from pulse.paypal_client import PayPalClient
 from pulse.store import PulseStore
 
@@ -1070,9 +1071,12 @@ def cmd_demo(
     console.print()
     console.print(
         Panel(
-            "[bold #00a8ea]PayPal Pulse[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [bold #f0f6fc]Developer Onboarding Tour[/bold #f0f6fc]\n"
-            "[dim]Terminal-Native Financial Telemetry & AI Copilot for Modern SaaS[/dim]\n\n"
-            "[bold #c9d1d9]You are viewing an isolated, zero-credential demo session.[/bold #c9d1d9]\n"
+            format_mascot_header(
+                title="Meet Pulse",
+                subtitle="Terminal-Native Financial Telemetry & AI Copilot",
+                state="idle",
+            )
+            + "\n\n[bold #c9d1d9]You are viewing an isolated, zero-credential demo session.[/bold #c9d1d9]\n"
             "This walkthrough demonstrates how PayPal Pulse bridges rapid code deployments with real-time financial observability.",
             title="[bold #00a8ea]ONBOARDING WALKTHROUGH[/bold #00a8ea]",
             border_style="#0070ba",
@@ -1166,12 +1170,14 @@ def cmd_setup(
     console.print()
     console.print(
         Panel(
-            "[bold #00a8ea]PayPal Pulse[/bold #00a8ea] [bold #e5a824]•[/bold #e5a824] [bold #f0f6fc]Credential Setup Wizard[/bold #f0f6fc]\n"
-            "[dim]Configure live PayPal Sandbox REST credentials & Pulse AI engine[/dim]\n"
-            "[dim]Saves verified credentials to ~/.pulse/config.json[/dim]",
+            format_mascot_header(
+                title="Credential Setup Wizard",
+                subtitle="Configure live PayPal Sandbox REST credentials & Pulse AI engine",
+                state="idle",
+            ),
             title="[bold #00a8ea]CREDENTIAL SETUP[/bold #00a8ea]",
             border_style="#0070ba",
-            padding=(0, 2),
+            padding=(0, 1),
         )
     )
 
