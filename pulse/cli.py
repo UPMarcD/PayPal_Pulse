@@ -29,7 +29,7 @@ from pulse.config import (
     get_settings,
     save_global_config,
 )
-from pulse.constants import EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
+from pulse.constants import EX_CONFIG, EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
 from pulse.paypal_client import PayPalClient
 from pulse.store import PulseStore
 
@@ -173,7 +173,7 @@ def cmd_seed(
                 "error": auth_res.error or "PayPal Sandbox authentication failed",
                 "code": EX_NOPERM,
             }
-            sys.stdout.write(json.dumps(err_payload, indent=2) + "\n")
+            sys.stderr.write(json.dumps(err_payload, indent=2) + "\n")
         else:
             console_err.print(f"[bold red]PayPal Sandbox Auth Failed:[/bold red] {auth_res.error}")
         raise typer.Exit(code=EX_NOPERM)

@@ -38,3 +38,44 @@ async def test_tui_vim_navigation_bindings() -> None:
         app.action_vim_down()
         assert tbl.cursor_row >= initial_row
         app.action_vim_up()
+
+
+@pytest.mark.asyncio
+async def test_tui_numeric_tab_bindings() -> None:
+    """Verify numeric keys 1-5 jump directly to corresponding tabs."""
+    from textual.widgets import TabbedContent
+    app = PayPalPulseTUI()
+    async with app.run_test(size=(120, 35)) as pilot:
+        tabs = app.query_one("#main-tabs", TabbedContent)
+
+        app.action_switch_tab("tab-timeline")
+        assert tabs.active == "tab-timeline"
+
+        app.action_switch_tab("tab-orders")
+        assert tabs.active == "tab-orders"
+
+        app.action_switch_tab("tab-disputes")
+        assert tabs.active == "tab-disputes"
+
+        app.action_switch_tab("tab-copilot")
+        assert tabs.active == "tab-copilot"
+
+        app.action_switch_tab("tab-dashboard")
+        assert tabs.active == "tab-dashboard"
+
+
+@pytest.mark.asyncio
+async def test_tui_help_modal_push_and_dismiss() -> None:
+    """Verify pressing '?' opens HelpModal and ESC closes it."""
+    from pulse.tui import HelpModal
+    app = PayPalPulseTUI()
+    async with app.run_test(size=(120, 35)) as pilot:
+        assert not isinstance(app.screen, HelpModal)
+        app.action_show_help()
+        await pilot.pause()
+        assert isinstance(app.screen, HelpModal)
+        # Dismiss help modal
+        app.screen.dismiss()
+        await pilot.pause()
+        assert not isinstance(app.screen, HelpModal)
+

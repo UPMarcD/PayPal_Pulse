@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from pulse.cli import app
 from pulse.config import PulseSettings
-from pulse.constants import EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
+from pulse.constants import EX_CONFIG, EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
 from pulse.paypal_client import PayPalAuthResult
 from pulse.store import PulseStore
 
@@ -326,5 +326,20 @@ def test_mcp_server_protocol_lifecycle(tmp_path):
     assert output_lines[2]["result"]["isError"] is False
     summary_data = json.loads(output_lines[2]["result"]["content"][0]["text"])
     assert "total_gross_usd" in summary_data
+
+
+def test_cli_order_unconfigured_ex_config(tmp_path):
+    """Test `pp order` exits with EX_CONFIG (78) when credentials are missing."""
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="",
+            paypal_client_secret="",
+            groq_api_key="",
+            cache_dir=tmp_path,
+        )
+        res = runner.invoke(app, ["order", "10", "USD"])
+        assert res.exit_code == EX_CONFIG
+        assert "PAYPAL_CLIENT_ID not configured" in res.output
+
 
 

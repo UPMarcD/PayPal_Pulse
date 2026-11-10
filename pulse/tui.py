@@ -14,6 +14,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -47,6 +48,60 @@ def _build_sparkline(values: list[float]) -> str:
     lo, hi = min(values), max(values)
     span = (hi - lo) if hi > lo else 1.0
     return "".join(blocks[min(7, int(((v - lo) / span) * 7))] for v in values)
+
+
+class HelpModal(ModalScreen[None]):
+    """Modal dialog displaying keyboard navigation and shortcuts."""
+
+    DEFAULT_CSS = """
+    HelpModal {
+        align: center middle;
+        background: rgba(13, 17, 23, 0.85);
+    }
+    #help-dialog {
+        width: 66;
+        height: auto;
+        border: round #58a6ff;
+        background: #161b22;
+        padding: 1 2;
+    }
+    #help-title {
+        color: #58a6ff;
+        text-style: bold;
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #help-close-tip {
+        color: #8b949e;
+        text-align: center;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("q", "dismiss", "Close"),
+        Binding("question_mark", "dismiss", "Close"),
+        Binding("space", "dismiss", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-dialog"):
+            yield Static("⌨  PayPal Pulse — Keyboard Shortcuts & Navigation", id="help-title")
+            yield Static("[bold #58a6ff]Tabs & Views[/bold #58a6ff]")
+            yield Static("  [bold #f0f6fc]1[/bold #f0f6fc] or [bold #f0f6fc]d[/bold #f0f6fc]    Dashboard & 30-Day Financial KPIs")
+            yield Static("  [bold #f0f6fc]2[/bold #f0f6fc] or [bold #f0f6fc]t[/bold #f0f6fc]    Git Release-to-Revenue Correlation Timeline")
+            yield Static("  [bold #f0f6fc]3[/bold #f0f6fc] or [bold #f0f6fc]o[/bold #f0f6fc]    Live PayPal Sandbox Orders & Invoicing")
+            yield Static("  [bold #f0f6fc]4[/bold #f0f6fc] or [bold #f0f6fc]x[/bold #f0f6fc]    Customer Disputes & Evidence Drafter")
+            yield Static("  [bold #f0f6fc]5[/bold #f0f6fc] or [bold #f0f6fc]a[/bold #f0f6fc]    Pulse AI Copilot Interactive Log\n")
+            yield Static("[bold #58a6ff]Actions & Navigation[/bold #58a6ff]")
+            yield Static("  [bold #f0f6fc]j / k[/bold #f0f6fc]        Scroll active DataTable rows (Vim down / up)")
+            yield Static("  [bold #f0f6fc]r[/bold #f0f6fc]            Force refresh PayPal Sandbox balances & ledger")
+            yield Static("  [bold #f0f6fc]L[/bold #f0f6fc]            Live/Sandbox credential setup")
+            yield Static("  [bold #f0f6fc]Tab[/bold #f0f6fc]          Focus next interactive control or input")
+            yield Static("  [bold #f0f6fc]?[/bold #f0f6fc]            Open this keyboard shortcuts cheat sheet")
+            yield Static("  [bold #f0f6fc]q[/bold #f0f6fc]            Quit PayPal Pulse\n")
+            yield Static("[dim]Press ESC, q, ?, or Space to dismiss[/dim]", id="help-close-tip")
 
 
 class PayPalPulseTUI(App):
@@ -114,7 +169,7 @@ class PayPalPulseTUI(App):
     }
     .kpi-row {
         height: 5;
-        margin: 0 0 1 0;
+        margin: 0;
     }
     .kpi-card {
         width: 1fr;
@@ -129,12 +184,16 @@ class PayPalPulseTUI(App):
     }
     .alert-banner {
         width: 100%;
-        height: auto;
+        height: 1;
         border-left: thick #f85149;
         background: #1c1417;
         color: #ffccd0;
         padding: 0 1;
-        margin: 0 0 1 0;
+        margin: 0;
+    }
+    #dash-sparkline {
+        height: 3;
+        margin: 0;
     }
     .section-box {
         border: round #21262d;
@@ -298,22 +357,28 @@ class PayPalPulseTUI(App):
         width: 100%;
         height: 100%;
         background: #0d1117;
-        color: #f85149;
+        color: #d29922;
         content-align: center middle;
         text-align: center;
-        border: heavy #f85149;
+        border: heavy #d29922;
     }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh_data", "Refresh"),
-        Binding("d", "switch_tab('tab-dashboard')", "Dashboard"),
-        Binding("t", "switch_tab('tab-timeline')", "Timeline"),
-        Binding("o", "switch_tab('tab-orders')", "Orders"),
-        Binding("x", "switch_tab('tab-disputes')", "Disputes"),
-        Binding("a", "switch_tab('tab-copilot')", "Pulse AI"),
-        Binding("L", "switch_to_live", "Live Setup", show=True),
+        Binding("1", "switch_tab('tab-dashboard')", "1:Dash", show=True),
+        Binding("2", "switch_tab('tab-timeline')", "2:Timeline", show=True),
+        Binding("3", "switch_tab('tab-orders')", "3:Orders", show=True),
+        Binding("4", "switch_tab('tab-disputes')", "4:Disputes", show=True),
+        Binding("5", "switch_tab('tab-copilot')", "5:Pulse AI", show=True),
+        Binding("question_mark", "show_help", "Help (?)", show=True),
+        Binding("L", "switch_to_live", "Live Setup", show=False),
+        Binding("d", "switch_tab('tab-dashboard')", "Dashboard", show=False),
+        Binding("t", "switch_tab('tab-timeline')", "Timeline", show=False),
+        Binding("o", "switch_tab('tab-orders')", "Orders", show=False),
+        Binding("x", "switch_tab('tab-disputes')", "Disputes", show=False),
+        Binding("a", "switch_tab('tab-copilot')", "Pulse AI", show=False),
         Binding("j", "vim_down", "Down", show=False),
         Binding("k", "vim_up", "Up", show=False),
     ]
@@ -614,8 +679,8 @@ class PayPalPulseTUI(App):
         if open_cnt > 0:
             self.query_one("#dash-dispute-alert", Static).display = True
             self.query_one("#dash-dispute-alert", Static).update(
-                f"[bold #f85149]⚠ ACTION REQUIRED:[/bold #f85149] {open_cnt} open buyer disputes on release [bold #f0f6fc]v1.2.1[/bold #f0f6fc] (DE). "
-                f"[dim]Impact: -{open_cnt * 5} pts CFO score • Press 'x' to inspect and auto-draft evidence.[/dim]"
+                f"[bold #f85149]⚠ ACTION REQUIRED:[/bold #f85149] {open_cnt} open buyer disputes on release [bold #f0f6fc]v1.2.1 (DE)[/bold #f0f6fc] "
+                f"[dim]• Press 4 to inspect and auto-draft evidence with Pulse AI[/dim]"
             )
         else:
             self.query_one("#dash-dispute-alert", Static).display = False
@@ -717,6 +782,10 @@ class PayPalPulseTUI(App):
 
     def action_switch_tab(self, tab_id: str) -> None:
         self.query_one("#main-tabs", TabbedContent).active = tab_id
+
+    def action_show_help(self) -> None:
+        """Display the interactive keyboard shortcuts modal dialog."""
+        self.push_screen(HelpModal())
 
     @on(Button.Pressed, "#btn-create-order")
     @on(Input.Submitted, "#order-amount")
