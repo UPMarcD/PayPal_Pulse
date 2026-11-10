@@ -786,6 +786,19 @@ class PulseStore:
             conn.commit()
             return cur.rowcount > 0
 
+    def resolve_dispute(
+        self,
+        dispute_id: str,
+        ai_evidence: str = "",
+        replacement_order_id: str = "",
+    ) -> bool:
+        """Alias for mark_dispute_resolved with flexible keyword arguments."""
+        return self.mark_dispute_resolved(
+            dispute_id=dispute_id,
+            ai_evidence=ai_evidence,
+            resolution_order_id=replacement_order_id,
+        )
+
     def get_recent_daily_metrics(self, days: int = 14) -> list[dict[str, Any]]:
         """Return last N days of revenue and install metrics sorted chronologically."""
         with self._connect() as conn:
@@ -903,6 +916,7 @@ class PulseStore:
             "disputes": disputes,
             "daily_14": daily_14,
             "live_sandbox_orders": live_txs,
+            "recent_transactions": self.get_transactions(limit=15),
         }
 
     def compute_merchant_health(

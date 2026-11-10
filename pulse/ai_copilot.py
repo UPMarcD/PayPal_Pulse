@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
@@ -56,6 +57,20 @@ PAYPAL_COPILOT_TOOLS: list[dict[str, Any]] = [
                     "item_name": {"type": "string", "description": "Description of the software or service"},
                 },
                 "required": ["recipient_email", "amount", "currency"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "resolve_paypal_dispute",
+            "description": "Auto-draft Pulse AI evidence notes and issue a replacement PayPal Sandbox order to resolve an open customer dispute.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dispute_id": {"type": "string", "description": "The exact dispute ID to resolve (e.g. PP-D-90411-DE)"},
+                },
+                "required": ["dispute_id"],
             },
         },
     },
@@ -243,10 +258,25 @@ def _detect_order_intent(question: str) -> tuple[bool, float, str, str]:
     return True, amount, currency, desc
 
 
+def _detect_dispute_intent(question: str) -> str | None:
+    """Detect if the user is asking Pulse to resolve or remediate a specific customer dispute."""
+    q_lower = question.lower().strip()
+    # Guard: interrogative inquiries about disputes
+    if re.search(r"^(how|why|what|explain|tell|show|list)\b", q_lower):
+        return None
+    if not re.search(r"\b(resolve|settle|remediate|fix|close|handle|cure)\b", q_lower):
+        return None
+    disp_match = re.search(r"\b(PP-D-[\w-]+)\b", question, re.IGNORECASE)
+    if disp_match:
+        return disp_match.group(1).upper()
+    return None
+
+
 def build_financial_context_prompt(
     summary: dict[str, Any],
     live_order_created: PayPalOrderResult | None = None,
     live_invoice_created: PayPalInvoiceResult | None = None,
+    dispute_resolved: str | None = None,
 ) -> str:
     """Format the SQLite telemetry and PayPal Sandbox state for the LLM system prompt."""
     currencies_txt = "\n".join(
@@ -274,6 +304,21 @@ def build_financial_context_prompt(
         f"Release={tx['release_version']} | Status={tx['status']} | URL={tx['approve_url']}"
         for tx in summary.get("live_sandbox_orders", [])[:5]
     )
+    recent_txs = summary.get("recent_transactions", [])
+    recent_txs_txt = "\n".join(
+        f"  - [{tx['created_at']}] ID={tx['paypal_id']} | Amount={tx['gross_amount']:.2f} {tx['currency']} "
+        f"(Fee: -{tx['fee_amount']:.2f}, Net: {tx['net_amount']:.2f}) | SKU={tx.get('platform_sku', 'Software License')} | "
+        f"Release={tx['release_version']} | Country={tx['country_code']} | Status={tx['status']} "
+        f"{'[LIVE SANDBOX]' if tx.get('is_live_sandbox') else ''}"
+        for tx in recent_txs[:10]
+    )
+    most_recent_sale_txt = (
+        f"{recent_txs[0]['created_at']} ({recent_txs[0]['gross_amount']:.2f} {recent_txs[0]['currency']} "
+        f"for {recent_txs[0].get('platform_sku', 'Software License')} on release {recent_txs[0]['release_version']} "
+        f"in {recent_txs[0]['country_code']})"
+        if recent_txs
+        else "No sales recorded yet"
+    )
 
     action_lines: list[str] = []
     if live_order_created and live_order_created.success:
@@ -294,6 +339,8 @@ def build_financial_context_prompt(
                 f"  - Invoice API Link: {live_invoice_created.self_url}",
             ]
         )
+    if dispute_resolved:
+        action_lines.append(f"  - Customer Dispute Resolved: {dispute_resolved}")
     action_block = (
         "\nLIVE ACTION JUST EXECUTED ON PAYPAL SANDBOX:\n" + "\n".join(action_lines) + "\n"
         if action_lines
@@ -359,6 +406,11 @@ MODEL CONTEXT PROTOCOL (MCP) INTEGRATION:
 
 === CUSTOMER DISPUTES ===
 {disputes_txt}
+
+=== MOST RECENT SALE & RECENT TRANSACTION LEDGER ===
+- Most Recent Sale Timestamp & Details: {most_recent_sale_txt}
+- Recent Sales / Transactions (ordered latest first):
+{recent_txs_txt}
 
 === LIVE PAYPAL SANDBOX ORDERS ===
 {live_orders_txt}
@@ -500,11 +552,33 @@ def ask_copilot(
         if action_parts:
             executed_action = " | ".join(action_parts)
 
+    # Check if user asked to resolve a specific customer dispute
+    dispute_resolved_info: str | None = None
+    target_dispute_id = _detect_dispute_intent(question)
+    if target_dispute_id:
+        disp_rec = st.get_dispute_by_id(target_dispute_id)
+        if disp_rec:
+            sku_val = disp_rec.get("platform_sku", disp_rec.get("device_model", "Software License"))
+            sandbox_res = pp.submit_dispute_resolution(
+                dispute_id=target_dispute_id,
+                evidence_text=f"Hotfix v1.2.2 deployed for {sku_val}",
+                amount=float(disp_rec.get("amount", 5.99)),
+                currency=disp_rec.get("currency", "EUR"),
+            )
+            rep_order = sandbox_res.get("replacement_order")
+            ev_text, _ = draft_dispute_evidence(dispute=disp_rec, replacement_order=rep_order, settings=cfg)
+            rep_id = rep_order.order_id if rep_order and rep_order.success else "PP-REPLACEMENT-PENDING"
+            st.resolve_dispute(dispute_id=target_dispute_id, ai_evidence=ev_text, replacement_order_id=rep_id)
+            dispute_resolved_info = f"{target_dispute_id} (Replacement Order {rep_id})"
+            act_str = f"Auto-drafted Pulse AI evidence & resolved dispute {target_dispute_id} (Replacement Sandbox Order {rep_id})"
+            executed_action = f"{executed_action} | {act_str}" if executed_action else act_str
+
     summary = st.get_dashboard_summary()
     system_prompt = build_financial_context_prompt(
         summary,
         live_order_created=created_order,
         live_invoice_created=created_invoice,
+        dispute_resolved=dispute_resolved_info,
     )
 
     messages = [
@@ -546,6 +620,22 @@ def ask_copilot(
                         if i_res.success:
                             created_invoice = i_res
                             action_parts.append(f"LLM Tool Call: Created Invoice {i_res.invoice_id} ({tc_amt:.2f} {tc_cur})")
+                    elif fn_name == "resolve_paypal_dispute":
+                        disp_id = str(args.get("dispute_id", "")).strip().upper()
+                        disp_rec = st.get_dispute_by_id(disp_id) if disp_id else None
+                        if disp_rec:
+                            sku_val = disp_rec.get("platform_sku", disp_rec.get("device_model", "Software License"))
+                            sandbox_res = pp.submit_dispute_resolution(
+                                dispute_id=disp_id,
+                                evidence_text=f"Hotfix v1.2.2 deployed for {sku_val}",
+                                amount=float(disp_rec.get("amount", 5.99)),
+                                currency=disp_rec.get("currency", "EUR"),
+                            )
+                            rep_order = sandbox_res.get("replacement_order")
+                            ev_text, _ = draft_dispute_evidence(dispute=disp_rec, replacement_order=rep_order, settings=cfg)
+                            rep_id = rep_order.order_id if rep_order and rep_order.success else "PP-REPLACEMENT-PENDING"
+                            st.resolve_dispute(dispute_id=disp_id, ai_evidence=ev_text, replacement_order_id=rep_id)
+                            action_parts.append(f"LLM Tool Call: Resolved Dispute {disp_id} (Replacement Order {rep_id})")
 
                 if action_parts:
                     executed_action = " | ".join(action_parts)
@@ -660,6 +750,20 @@ def _build_deterministic_fallback(
         "due to automated license token dispatch timeouts on EUR checkout.",
         "- **Release v1.2.0 Surge:** Async engine & performance optimization boosted conversion from `6.19%` (`v1.1.0`) to `9.40%` (`+52%`), generating `$3,091.15` net USD.",
     ]
+
+    # Specific response for transaction timing / most recent sale inquiries
+    q_low = question.lower()
+    recent_txs = summary.get("recent_transactions", [])
+    if any(k in q_low for k in ("recent sale", "last sale", "latest sale", "recent order", "latest order", "last order", "when was", "recent transaction")):
+        if recent_txs:
+            top = recent_txs[0]
+            lines.insert(
+                1,
+                f"- **Most Recent Sale:** Recorded on `{top['created_at']}` for **{top['gross_amount']:.2f} {top['currency']}** "
+                f"({top.get('platform_sku', 'Software License')} on release `{top['release_version']}` in `{top['country_code']}`). "
+                f"PayPal Fee Drag: -{top['fee_amount']:.2f} {top['currency']} -> True Net Take-Home: **{top['net_amount']:.2f} {top['currency']}**."
+            )
+
     if created_order and created_order.success:
         lines.append(
             f"- **Live PayPal Sandbox Order Created:** `{created_order.order_id}` (`{created_order.amount:.2f} {created_order.currency}`) -> {created_order.approve_url}"
