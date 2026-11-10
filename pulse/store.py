@@ -799,6 +799,21 @@ class PulseStore:
             ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
+    def get_transactions(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return all transactions ledger entries ordered by most recent first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, paypal_id, created_at, gross_amount, fee_amount, net_amount,
+                       currency, release_version, country_code, platform_sku, status, is_live_sandbox
+                FROM transactions
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_live_sandbox_transactions(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return transactions backed by real live PayPal Sandbox Order IDs."""
         with self._connect() as conn:

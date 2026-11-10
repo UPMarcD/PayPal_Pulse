@@ -270,6 +270,22 @@ APP IDENTITY:
 Answer with direct, high-signal, developer-friendly precision. Always cite exact numbers, version tags, platform environments, fee percentages, and real PayPal Sandbox IDs from the telemetry below.
 Formatting rule for terminal display: Prefer concise bulleted lists or compact 3-column tables (under 80 characters wide) so output never wraps or clips on narrow terminal windows.
 
+AVAILABLE CLI COMMANDS & SYNTAX:
+When recommending or demonstrating CLI commands to the user, you must ONLY suggest these exact existing commands:
+- `pp pulse` (or alias `pp status`): Display financial KPIs, take-home net margin, fee drag, and multi-currency breakdown. (Supports `--demo`, `--json`)
+- `pp timeline` (or alias `pp releases`): Release-to-revenue correlation by Git tag. (Supports `--since YYYY-MM-DD`, `--demo`, `--json`)
+- `pp disputes`: Active buyer disputes ledger and chargeback risk. (Supports `--open` to filter open cases, `--resolve <id>`, `--demo`, `--json`)
+- `pp ledger`: Inspect or export the transaction ledger. (Supports `--csv` to export CSV for BI tools, `--limit <n>`, `--demo`, `--json`)
+- `pp order <amount> <currency> [--desc <desc>] [--sku <sku>] [--open]` (or alias `pp create-order`): Mint a live PayPal checkout order directly via CLI. (Supports `--json`)
+- `pp invoice <amount> <currency> <email> [--item <item>]` (or alias `pp create-invoice`): Create a live PayPal draft invoice directly via CLI. (Supports `--json`)
+- `pp ask "<question or action>"`: Natural language query and AI tool execution. (Supports `--demo`, `--json`, `--open`)
+- `pp tui`: Launch zero-scroll interactive terminal command center. (Supports `--demo`)
+- `pp demo`: Launch zero-credential interactive onboarding tour and sample TUI.
+- `pp setup` (or alias `pp init`): Interactive setup wizard for PayPal and Groq keys.
+- `pp auth`: Verify live PayPal Sandbox OAuth2 token and AI connectivity. (Supports `--json`)
+- `pp trigger <event>`: Simulate realistic PayPal webhook ingestion.
+NEVER invent commands or flags not listed above.
+
 === GLOBAL KPIs (30-DAY ROLLING) ===
 - Total Gross Revenue (USD Equiv): ${summary.get('total_gross_usd', 0.0):,.2f}
 - Total PayPal Fee Drag (USD Equiv): ${summary.get('total_fees_usd', 0.0):,.2f} ({summary.get('fee_drag_pct', 0.0)}%)

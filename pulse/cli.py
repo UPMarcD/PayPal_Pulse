@@ -289,6 +289,7 @@ def cmd_seed(
 
 
 @app.command("pulse")
+@app.command("status")
 def cmd_pulse(
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
     demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database (.pulse_cache/demo.db)"),
@@ -458,7 +459,9 @@ def cmd_pulse(
 
 
 @app.command("timeline")
+@app.command("releases")
 def cmd_timeline(
+    since: Optional[str] = typer.Option(None, "--since", "-s", help="Filter releases on or after date (YYYY-MM-DD)"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
     demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database (.pulse_cache/demo.db)"),
 ) -> None:
@@ -469,6 +472,8 @@ def cmd_timeline(
         store.seed_telemetry()
 
     releases = store.get_releases(include_git_tags=True)
+    if since:
+        releases = [r for r in releases if r.get("released_at", "")[:10] >= since or since in r.get("released_at", "")]
 
     if json_output:
         sys.stdout.write(json.dumps(releases, indent=2) + "\n")
@@ -556,6 +561,12 @@ def cmd_disputes(
         "--yes",
         "-y",
         help="Skip confirmation prompt on dispute resolution",
+    ),
+    only_open: bool = typer.Option(
+        False,
+        "--open",
+        "-o",
+        help="Filter disputes to only active/unresolved cases",
     ),
     json_output: bool = typer.Option(
         False,
@@ -660,6 +671,8 @@ def cmd_disputes(
     auth_res = pp_client.authenticate(force_refresh=False)
     live_disp_probe = pp_client.get_disputes() if auth_res.authenticated else {"ok": False, "items": []}
     disputes = store.get_disputes()
+    if only_open:
+        disputes = [d for d in disputes if d.get("status") == "OPEN"]
 
     if json_output:
         sys.stdout.write(json.dumps(disputes, indent=2) + "\n")
@@ -701,6 +714,177 @@ def cmd_disputes(
     console.print(
         "[dim]Tip: Run[/dim] [bold cyan]pp disputes --resolve PP-D-90411-DE[/bold cyan] "
         "[dim]to draft an evidence response with Pulse AI and mint a live PayPal Sandbox replacement order.[/dim]"
+    )
+
+
+@app.command("ledger")
+def cmd_ledger(
+    csv_output: bool = typer.Option(False, "--csv", help="Export transaction ledger as standard CSV"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+    limit: int = typer.Option(100, "--limit", "-l", help="Maximum transactions to export"),
+    demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database (.pulse_cache/demo.db)"),
+) -> None:
+    """Export or inspect the financial transaction ledger (supports CSV and JSON)."""
+    import csv
+    import io
+
+    settings = get_settings(demo_mode=demo)
+    store = PulseStore(settings.db_path)
+    if not store.is_seeded():
+        store.seed_telemetry()
+
+    txs = store.get_transactions(limit=limit)
+
+    if csv_output:
+        if not txs:
+            return
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=list(txs[0].keys()))
+        writer.writeheader()
+        writer.writerows(txs)
+        sys.stdout.write(output.getvalue())
+        return
+
+    if json_output:
+        sys.stdout.write(json.dumps(txs, indent=2) + "\n")
+        return
+
+    table = Table(
+        title="PayPal Pulse — Financial Transaction Ledger",
+        box=box.ROUNDED,
+        expand=True,
+    )
+    table.add_column("PayPal ID", style="bold yellow", no_wrap=True)
+    table.add_column("Date", no_wrap=True)
+    table.add_column("Gross", justify="right", style="bold")
+    table.add_column("Fee", justify="right", style="dim")
+    table.add_column("Net", justify="right", style="bold green")
+    table.add_column("Curr", style="cyan")
+    table.add_column("Release", style="magenta")
+    table.add_column("Country", style="white")
+    table.add_column("Platform / SKU", style="dim")
+    table.add_column("Status", no_wrap=True)
+
+    for tx in txs:
+        table.add_row(
+            tx["paypal_id"],
+            tx["created_at"][:19],
+            f"{tx['gross_amount']:.2f}",
+            f"{tx['fee_amount']:.2f}",
+            f"{tx['net_amount']:.2f}",
+            tx["currency"],
+            tx["release_version"],
+            tx["country_code"],
+            tx.get("platform_sku", ""),
+            "[green]CAPTURED[/green]" if tx["status"] in ("CAPTURED", "COMPLETED") else tx["status"],
+        )
+    console.print(table)
+
+
+@app.command("order")
+@app.command("create-order")
+def cmd_order(
+    amount: float = typer.Argument(..., help="Numeric amount to charge (e.g. 5.99)"),
+    currency: str = typer.Argument("USD", help="Currency code (USD, EUR, GBP, PHP)"),
+    desc: str = typer.Option("PulseCore Pro Developer License", "--desc", "-d", help="Item or order description"),
+    sku: str = typer.Option("PulseCore Pro", "--sku", "-s", help="Platform SKU or tier"),
+    open_browser: bool = typer.Option(False, "--open", "-o", help="Open approval link in default browser"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+    demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database"),
+) -> None:
+    """Mint a live PayPal checkout order (Orders v2 API) directly from the CLI."""
+    import webbrowser
+
+    settings = get_settings(demo_mode=demo)
+    store = PulseStore(settings.db_path)
+    pp_client = PayPalClient(settings)
+
+    if not settings.paypal_client_id:
+        console_err.print("[bold red]Error:[/bold red] PAYPAL_CLIENT_ID not configured. Run `pp setup` first.")
+        raise typer.Exit(code=EX_CONFIG)
+
+    res = pp_client.create_order(
+        amount=amount,
+        currency=currency.upper(),
+        description=desc,
+        custom_id=f"cli_{sku.lower().replace(' ', '_')}",
+    )
+
+    if not res.success:
+        console_err.print(f"[bold red]PayPal API Error:[/bold red] {res.error}")
+        raise typer.Exit(code=EX_UNAVAILABLE)
+
+    store.record_live_order(
+        order=res,
+        release_version="v1.2.1",
+        platform_sku=sku,
+    )
+
+    if json_output:
+        sys.stdout.write(json.dumps(res.model_dump(), indent=2) + "\n")
+        return
+
+    if open_browser and res.approve_url:
+        webbrowser.open(res.approve_url)
+
+    console.print(
+        Panel(
+            f"[bold green]✔ Live PayPal Sandbox Order Minted Successfully[/bold green]\n\n"
+            f"[bold white]Order ID:[/bold white]     [yellow]{res.order_id}[/yellow]\n"
+            f"[bold white]Amount:[/bold white]       [cyan]{res.amount:.2f} {res.currency}[/cyan]\n"
+            f"[bold white]SKU / Tier:[/bold white]   {sku}\n"
+            f"[bold white]Status:[/bold white]       {res.status}\n"
+            f"[bold white]Approve URL:[/bold white]  [link={res.approve_url}]{res.approve_url}[/link]",
+            title="[bold #00a8ea]PayPal Orders v2 API[/bold #00a8ea]",
+            border_style="#0070ba",
+        )
+    )
+
+
+@app.command("invoice")
+@app.command("create-invoice")
+def cmd_invoice(
+    amount: float = typer.Argument(..., help="Invoice amount to bill"),
+    currency: str = typer.Argument("USD", help="Currency code (USD, EUR, GBP, PHP)"),
+    recipient_email: str = typer.Argument(..., help="Recipient customer or partner email"),
+    item: str = typer.Option("Enterprise License", "--item", "-i", help="Line item description"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+    demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database"),
+) -> None:
+    """Create a live PayPal draft invoice (Invoicing v2 API) directly from the CLI."""
+    settings = get_settings(demo_mode=demo)
+    pp_client = PayPalClient(settings)
+
+    if not settings.paypal_client_id:
+        console_err.print("[bold red]Error:[/bold red] PAYPAL_CLIENT_ID not configured. Run `pp setup` first.")
+        raise typer.Exit(code=EX_CONFIG)
+
+    res = pp_client.create_draft_invoice(
+        recipient_email=recipient_email,
+        amount=amount,
+        currency=currency.upper(),
+        item_name=item,
+    )
+
+    if not res.success:
+        console_err.print(f"[bold red]PayPal Invoicing API Error:[/bold red] {res.error}")
+        raise typer.Exit(code=EX_UNAVAILABLE)
+
+    if json_output:
+        sys.stdout.write(json.dumps(res.model_dump(), indent=2) + "\n")
+        return
+
+    console.print(
+        Panel(
+            f"[bold green]✔ Live PayPal Sandbox Draft Invoice Created[/bold green]\n\n"
+            f"[bold white]Invoice ID:[/bold white]  [yellow]{res.invoice_id}[/yellow]\n"
+            f"[bold white]Recipient:[/bold white]   {res.recipient_email}\n"
+            f"[bold white]Amount:[/bold white]      [cyan]{res.amount:.2f} {res.currency}[/cyan]\n"
+            f"[bold white]Status:[/bold white]      {res.status}\n"
+            f"[bold white]API Link:[/bold white]    {res.self_url}",
+            title="[bold #00a8ea]PayPal Invoicing v2 API[/bold #00a8ea]",
+            border_style="#0070ba",
+        )
     )
 
 

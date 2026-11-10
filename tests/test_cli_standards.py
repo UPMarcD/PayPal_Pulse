@@ -8,8 +8,10 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from pulse.cli import app
+from pulse.config import PulseSettings
 from pulse.constants import EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
 from pulse.paypal_client import PayPalAuthResult
+from pulse.store import PulseStore
 
 runner = CliRunner()
 
@@ -191,3 +193,86 @@ def test_hierarchical_global_config(tmp_path: Path) -> None:
         assert loaded.paypal_client_id == "test_global_client_id"
         assert loaded.paypal_client_secret == "test_global_secret"
         assert loaded.groq_api_key == "test_global_groq"
+
+
+def test_cli_status_alias(tmp_path):
+    """Test `pp status` functions as a full alias to `pp pulse`."""
+    db_file = tmp_path / "test_status.db"
+    store = PulseStore(db_file)
+    store.seed_telemetry()
+
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="mock_id",
+            paypal_client_secret="mock_secret",
+            groq_api_key="mock_groq",
+            cache_dir=tmp_path,
+        )
+        res = runner.invoke(app, ["status", "--json", "--demo"])
+        assert res.exit_code == 0
+        data = json.loads(res.stdout)
+        assert "total_gross_usd" in data
+        assert "fee_drag_pct" in data
+
+
+def test_cli_releases_alias_and_since(tmp_path):
+    """Test `pp releases` alias and `--since` date filter."""
+    db_file = tmp_path / "test_releases.db"
+    store = PulseStore(db_file)
+    store.seed_telemetry()
+
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="mock_id",
+            paypal_client_secret="mock_secret",
+            groq_api_key="mock_groq",
+            cache_dir=tmp_path,
+        )
+        res = runner.invoke(app, ["releases", "--since", "2026-10-20", "--json", "--demo"])
+        assert res.exit_code == 0
+        items = json.loads(res.stdout)
+        versions = [r["version"] for r in items]
+        assert "v1.2.0" in versions
+        assert "v1.2.1" in versions
+        assert "v1.1.0" not in versions
+
+
+def test_cli_disputes_open_flag(tmp_path):
+    """Test `pp disputes --open` filters out resolved cases."""
+    db_file = tmp_path / "test_disputes_open.db"
+    store = PulseStore(db_file)
+    store.seed_telemetry()
+
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="mock_id",
+            paypal_client_secret="mock_secret",
+            groq_api_key="mock_groq",
+            cache_dir=tmp_path,
+        )
+        res = runner.invoke(app, ["disputes", "--open", "--json", "--demo"])
+        assert res.exit_code == 0
+        items = json.loads(res.stdout)
+        assert len(items) == 3
+        for item in items:
+            assert item["status"] == "OPEN"
+
+
+def test_cli_ledger_csv_export(tmp_path):
+    """Test `pp ledger --csv` outputs clean CSV with transaction headers."""
+    db_file = tmp_path / "test_ledger.db"
+    store = PulseStore(db_file)
+    store.seed_telemetry()
+
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="mock_id",
+            paypal_client_secret="mock_secret",
+            groq_api_key="mock_groq",
+            cache_dir=tmp_path,
+        )
+        res = runner.invoke(app, ["ledger", "--csv", "--demo"])
+        assert res.exit_code == 0
+        assert "paypal_id,created_at,gross_amount" in res.stdout
+        assert "PP-TXN-" in res.stdout
+
