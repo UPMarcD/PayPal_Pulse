@@ -295,7 +295,7 @@ def cmd_seed(
 
 
 @app.command("pulse")
-@app.command("status")
+@app.command("status", hidden=True)
 def cmd_pulse(
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
     demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database (.pulse_cache/demo.db)"),
@@ -465,7 +465,7 @@ def cmd_pulse(
 
 
 @app.command("timeline")
-@app.command("releases")
+@app.command("releases", hidden=True)
 def cmd_timeline(
     since: Optional[str] = typer.Option(None, "--since", "-s", help="Filter releases on or after date (YYYY-MM-DD)"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
@@ -788,7 +788,7 @@ def cmd_ledger(
 
 
 @app.command("order")
-@app.command("create-order")
+@app.command("create-order", hidden=True)
 def cmd_order(
     amount: float = typer.Argument(..., help="Numeric amount to charge (e.g. 5.99)"),
     currency: str = typer.Argument("USD", help="Currency code (USD, EUR, GBP, PHP)"),
@@ -848,7 +848,7 @@ def cmd_order(
 
 
 @app.command("invoice")
-@app.command("create-invoice")
+@app.command("create-invoice", hidden=True)
 def cmd_invoice(
     amount: float = typer.Argument(..., help="Invoice amount to bill"),
     currency: str = typer.Argument("USD", help="Currency code (USD, EUR, GBP, PHP)"),
@@ -1151,7 +1151,7 @@ def cmd_demo(
 
 
 @app.command("setup")
-@app.command("init")
+@app.command("init", hidden=True)
 def cmd_setup(
     client_id: Optional[str] = typer.Option(None, "--client-id", help="PayPal REST App Client ID"),
     client_secret: Optional[str] = typer.Option(None, "--client-secret", help="PayPal REST App Secret"),
