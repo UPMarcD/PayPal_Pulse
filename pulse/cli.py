@@ -926,7 +926,7 @@ def cmd_ask(
         Panel(
             Markdown(res.answer),
             title=(
-                f"[bold #00a8ea]Pulse — PayPal Pulse AI Copilot[/bold #00a8ea] "
+                f"[bold #00a8ea]Pulse[/bold #00a8ea] [bold #0070ba]ﮩ٨ـ⚡[/bold #0070ba] [bold #00a8ea]— PayPal Pulse AI Copilot[/bold #00a8ea] "
                 f"[dim](⚡ {res.tokens_per_sec:.0f} tok/s · {res.latency_ms / 1000:.2f}s)[/dim]"
             ),
             border_style="#0070ba",
@@ -1070,12 +1070,14 @@ def cmd_demo(
     console.print()
     console.print(
         Panel(
-            "[bold #58a6ff]⚡ Welcome to PayPal Pulse (`pp demo`) — Guided Onboarding Tour[/bold #58a6ff]\n"
-            "[dim]Terminal-Native Financial Telemetry & AI Copilot for Modern SaaS & Software Creators[/dim]\n\n"
+            "[bold #00a8ea]    ▄█▄  ▄█[/bold #00a8ea]   [bold #f0f6fc]Meet Pulse[/bold #f0f6fc] [bold #00a8ea]ﮩ٨ـ⚡[/bold #00a8ea]\n"
+            "[bold #00a8ea] ·▛·█▀█·█▀█·▜·[/bold #00a8ea]   [dim]Terminal-Native Financial Telemetry & AI Copilot for Modern SaaS[/dim]\n"
+            "[bold #00a8ea]──▜·[bold #f0f6fc]●···●[/bold #f0f6fc]·▛·──[/bold #00a8ea]   [dim]PayPal Sandbox Orders • Dispute Evidence • Git Telemetry[/dim]\n"
+            "[bold #00a8ea]   ▘▘ ▀█▀ ▝▝[/bold #00a8ea]\n\n"
             "[bold #c9d1d9]You are viewing an isolated, zero-credential demo session.[/bold #c9d1d9]\n"
             "This walkthrough demonstrates how PayPal Pulse bridges rapid code deployments with real-time financial observability.",
-            title="[bold #58a6ff]ONBOARDING WALKTHROUGH[/bold #58a6ff]",
-            border_style="#58a6ff",
+            title="[bold #00a8ea]ONBOARDING WALKTHROUGH[/bold #00a8ea]",
+            border_style="#0070ba",
             padding=(1, 2),
         )
     )
@@ -1165,10 +1167,14 @@ def cmd_setup(
 
     console.print()
     console.print(
-        Panel.fit(
-            "[bold #00a8ea]PayPal Pulse (`pp setup`) — Guided Configuration Wizard[/bold #00a8ea]\n"
-            "[dim]Saves verified credentials to ~/.pulse/config.json (persistent across all directories)[/dim]",
+        Panel(
+            "[bold #00a8ea]    ▄█▄  ▄█[/bold #00a8ea]   [bold #f0f6fc]PayPal Pulse Setup Wizard[/bold #f0f6fc] [bold #00a8ea]ﮩ٨ـ⚡[/bold #00a8ea]\n"
+            "[bold #00a8ea] ·▛·█▀█·█▀█·▜·[/bold #00a8ea]   [dim]Configures live PayPal Sandbox REST credentials & Pulse AI[/dim]\n"
+            "[bold #00a8ea]──▜·[bold #f0f6fc]●···●[/bold #f0f6fc]·▛·──[/bold #00a8ea]   [dim]Saves verified credentials to ~/.pulse/config.json[/dim]\n"
+            "[bold #00a8ea]   ▘▘ ▀█▀ ▝▝[/bold #00a8ea]",
+            title="[bold #00a8ea]CREDENTIAL SETUP[/bold #00a8ea]",
             border_style="#0070ba",
+            padding=(0, 1),
         )
     )
 

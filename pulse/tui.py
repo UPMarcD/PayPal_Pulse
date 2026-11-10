@@ -112,47 +112,47 @@ class PayPalPulseTUI(App):
 
     CSS = """
     Screen {
-        background: #0d1117;
+        background: #0a101d;
         color: #c9d1d9;
         overflow: hidden;
     }
     #global-context-bar {
         height: auto;
         min-height: 1;
-        border-bottom: solid #21262d;
-        background: #161b22;
+        border-bottom: solid #1c2e4a;
+        background: #111c2e;
         padding: 0 1;
         margin: 0;
-        color: #8b949e;
+        color: #8b9cb0;
     }
     TabbedContent {
-        background: #0d1117;
+        background: #0a101d;
         height: 1fr;
     }
     Tabs {
-        background: #0d1117;
-        border-bottom: solid #21262d;
+        background: #0a101d;
+        border-bottom: solid #1c2e4a;
         height: 3;
     }
     Tab {
-        background: #0d1117;
-        color: #8b949e;
+        background: #0a101d;
+        color: #8b9cb0;
         padding: 0 2;
     }
     Tab:hover {
         color: #c9d1d9;
-        background: #161b22;
+        background: #111c2e;
     }
     Tab.-active {
         color: #f0f6fc;
         text-style: bold;
-        background: #161b22;
+        background: #111c2e;
     }
     Underline {
-        color: #58a6ff;
+        color: #00a8ea;
     }
     TabPane {
-        background: #0d1117;
+        background: #0a101d;
         padding: 0 1;
         height: 1fr;
     }
@@ -174,13 +174,13 @@ class PayPalPulseTUI(App):
     .kpi-card {
         width: 1fr;
         height: 100%;
-        border: round #21262d;
-        background: #161b22;
+        border: round #1c2e4a;
+        background: #111c2e;
         padding: 0 1;
         margin: 0 1 0 0;
     }
     .kpi-card:hover {
-        border: round #58a6ff;
+        border: round #00a8ea;
     }
     .alert-banner {
         width: 100%;
@@ -194,10 +194,12 @@ class PayPalPulseTUI(App):
     #dash-sparkline {
         height: 3;
         margin: 0;
+        border: round #1c2e4a;
+        background: #111c2e;
     }
     .section-box {
-        border: round #21262d;
-        background: #161b22;
+        border: round #1c2e4a;
+        background: #111c2e;
         padding: 0 1;
         margin: 0 0 1 0;
         height: auto;
@@ -210,12 +212,12 @@ class PayPalPulseTUI(App):
     .form-row Input {
         width: 1fr;
         margin: 0 1 0 0;
-        background: #161b22;
-        border: round #30363d;
+        background: #111c2e;
+        border: round #1c2e4a;
         color: #e6edf3;
     }
     .form-row Input:focus {
-        border: round #58a6ff;
+        border: round #00a8ea;
     }
     .form-row Button {
         width: auto;
@@ -496,7 +498,10 @@ class PayPalPulseTUI(App):
                     yield Static(id="copilot-context-bar")
                     with VerticalScroll(id="copilot-chat-scroll"):
                         yield Static(
-                            "[bold #d97757]● Pulse[/bold #d97757] [dim]— PayPal Pulse Financial Intelligence[/dim]\n"
+                            "[bold #00a8ea]    ▄█▄  ▄█[/bold #00a8ea]   [bold #f0f6fc]Pulse AI Copilot[/bold #f0f6fc] [bold #00a8ea]ﮩ٨ـ⚡[/bold #00a8ea]\n"
+                            "[bold #00a8ea] ·▛·█▀█·█▀█·▜·[/bold #00a8ea]   [dim]Real-time financial telemetry intelligence (Groq LPU Engine)[/dim]\n"
+                            "[bold #00a8ea]──▜·[bold #f0f6fc]●···●[/bold #f0f6fc]·▛·──[/bold #00a8ea]   [dim]PayPal Sandbox Orders • Dispute Evidence • Git Telemetry[/dim]\n"
+                            "[bold #00a8ea]   ▘▘ ▀█▀ ▝▝[/bold #00a8ea]\n\n"
                             "Ask anything about your 30-day multi-currency ledger, release conversion velocity, "
                             "or German v1.2.1 buyer disputes — or instruct Pulse to mint live PayPal Sandbox orders & invoices.",
                             classes="claude-welcome-card",
