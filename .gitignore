@@ -18,3 +18,7 @@ build/
 *.db
 *.sqlite3
 .pulse_cache/
+
+# Internal Docs & Agent Operating Guidelines (Private / Not in Public Repo)
+AGENTS.md
+docs/

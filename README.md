@@ -1,6 +1,6 @@
 # PayPal Pulse (`pp`)
 
-**Terminal-Native Financial Telemetry & Pulse AI Copilot for Indie Developers and Micro-Businesses**
+**Terminal-Native Financial Telemetry & Pulse AI Copilot for Modern SaaS & Software Creators**
 
 PayPal Pulse (`pp`) brings real-time PayPal Sandbox/Live financial observability, Git release-to-revenue correlation, proactive dispute resolution, and **Pulse AI** (Financial Intelligence Copilot) directly into your developer terminal.
 
@@ -17,7 +17,7 @@ PayPal Pulse (`pp`) brings real-time PayPal Sandbox/Live financial observability
      - **Invoicing v2 API** (`GET /v2/invoicing/invoices` & `POST /v2/invoicing/invoices`)
      - **Orders v2 API** (`POST /v2/checkout/orders` & `GET /v2/checkout/orders/{id}`)
 2. **Dual-Engine Instant Storage (`pulse/store.py`)**
-   - Stores real PayPal Sandbox Order/Invoice/Transaction IDs in a local SQLite database (`.pulse_cache/pulse.db`) alongside smartwatch micro-business telemetry (`v1.1.0`, `v1.2.0`, `v1.2.1`, install counts, device models, multi-currency fee drag) so newly created sandbox orders appear instantaneously without waiting for the Reporting API's 3-hour indexing latency.
+   - Stores real PayPal Sandbox Order/Invoice/Transaction IDs in a local SQLite database (`.pulse_cache/pulse.db`) alongside modern SaaS software telemetry (`v1.1.0`, `v1.2.0`, `v1.2.1`, install counts, platform SKUs, multi-currency fee drag) so newly created sandbox orders appear instantaneously without waiting for the Reporting API's 3-hour indexing latency.
 3. **Pulse AI Financial Copilot (`pulse/ai_copilot.py`)**
    - Claude-inspired interactive terminal financial copilot (`Pulse`) with live tool execution.
    - Answers natural language questions over live PayPal telemetry and executes live PayPal Sandbox actions (e.g., generating live checkout links or drafting dispute evidence).
@@ -26,35 +26,46 @@ PayPal Pulse (`pp`) brings real-time PayPal Sandbox/Live financial observability
 
 ## Quick Start
 
+### 1. Instant Exploration (Zero-Setup Demo Tour)
+If you want to immediately explore PayPal Pulse with realistic SaaS telemetry without creating any accounts or entering API keys:
 ```bash
-# 1. Install package in editable mode
+# Install in editable mode
 pip install -e .
 
-# 2. Configure credentials in .env (see .env.example)
-# PAYPAL_CLIENT_ID=...
-# PAYPAL_CLIENT_SECRET=...
-# GROQ_API_KEY=...
+# Launch the guided interactive onboarding demo tour
+pp demo
 
-# 3. Verify live PayPal Sandbox OAuth2 & Pulse AI connection
+# Or directly open the full-screen interactive Terminal UI in demo mode
+pp tui --demo
+```
+
+---
+
+### 2. Live PayPal Sandbox Mode
+When you are ready to connect to your live PayPal Developer Sandbox:
+```bash
+# Run the interactive setup wizard (saves verified credentials to ~/.pulse/config.json or .env)
+pp setup
+
+# Or verify existing credentials
 pp auth
 
-# 4. Seed real Orders/Invoices on PayPal Sandbox + 30-day smartwatch telemetry
-pp seed
-
-# 5. View the rich terminal financial & smartwatch dashboard
+# View the rich terminal financial & software telemetry dashboard
 pp pulse
 
-# 6. Inspect Git release-to-revenue correlation timeline
+# Inspect Git release-to-revenue correlation timeline
 pp timeline
 
-# 7. View active disputes & resolve a dispute with Pulse AI + live Sandbox order
+# View active buyer disputes & auto-resolve with Pulse AI + replacement order
 pp disputes
-pp disputes --resolve PP-D-90411-DE
+pp disputes --resolve PP-D-90411-DE --yes
 
-# 8. Ask Pulse AI Financial Copilot (or ask it to create a live order!)
-pp ask "Why did German users dispute v1.2.1 and what is my true net take-home after fees?"
-pp ask "Create a $9.99 USD PayPal order for ChronoPulse Pro"
+# Simulate an inbound PayPal webhook into the local dual-engine ledger
+pp trigger --event payment.capture.completed
 
-# 9. Launch the full-screen interactive Textual TUI
+# Chat with Pulse AI Financial Copilot
+pp ask "What is our net margin after PayPal fees?"
+
+# Launch the full-screen interactive Textual command center
 pp tui
 ```
