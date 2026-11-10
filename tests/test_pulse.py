@@ -210,7 +210,7 @@ def test_live_paypal_sandbox_and_groq_integration(tmp_path: Path) -> None:
     assert groq_status.connected is True
     assert groq_status.available_models_count > 0
 
-    # Verify ask_copilot invoice + order tool execution on PayPal Sandbox
+    # Verify ask_copilot invoice + order tool execution on PayPal Sandbox (cleanly separated)
     iso_store = PulseStore(db_path=tmp_path / "copilot_live.db")
     iso_store.seed_smartwatch_telemetry()
     ans = ask_copilot(
@@ -220,9 +220,19 @@ def test_live_paypal_sandbox_and_groq_integration(tmp_path: Path) -> None:
         settings=settings,
     )
     assert ans.created_invoice is not None and ans.created_invoice.success is True
-    assert ans.created_order is not None and ans.created_order.success is True
+    assert ans.created_order is None  # Ensures invoice query does not mint phantom order
     assert "Invoice" in (ans.executed_action or "")
-    assert ans.model_used != "" and "groq/" not in ans.model_used
+
+    ans_order = ask_copilot(
+        "Create a $15.00 USD PayPal order for PulseCore Pro license",
+        store=iso_store,
+        paypal_client=client,
+        settings=settings,
+    )
+    assert ans_order.created_order is not None and ans_order.created_order.success is True
+    assert ans_order.created_invoice is None
+    assert "Order" in (ans_order.executed_action or "")
+    assert ans_order.model_used != "" and "groq/" not in ans_order.model_used
 
 
 def test_cli_commands_end_to_end() -> None:
