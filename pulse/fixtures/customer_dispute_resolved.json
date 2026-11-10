@@ -1,0 +1,19 @@
+{
+  "id": "WH-SIM-RESOLVED-001",
+  "event_version": "1.0",
+  "create_time": "2026-11-10T12:05:00.000Z",
+  "resource_type": "dispute",
+  "event_type": "CUSTOMER.DISPUTE.RESOLVED",
+  "summary": "Customer dispute resolved in merchant's favor for PP-D-99881-US",
+  "resource": {
+    "dispute_id": "PP-D-99881-US",
+    "status": "RESOLVED",
+    "dispute_outcome": {
+      "outcome_code": "RESOLVED_BUYER_FAVOUR",
+      "amount_refunded": {
+        "currency_code": "USD",
+        "value": "0.00"
+      }
+    }
+  }
+}

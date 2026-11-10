@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,8 @@ import httpx
 from pydantic import BaseModel, Field
 
 from pulse.config import PulseSettings, get_settings
+
+_GLOBAL_AUTH_LOCK = threading.Lock()
 
 
 class PayPalAuthResult(BaseModel):
@@ -27,6 +30,8 @@ class PayPalAuthResult(BaseModel):
     nonce: str = ""
     latency_ms: float = 0.0
     cached: bool = False
+    status_code: int | None = None
+    error_type: str | None = None
     error: str | None = None
 
 
@@ -77,9 +82,10 @@ class PayPalClient:
         max_attempts: int = 3,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Execute an HTTP request against PayPal with automatic retry on transient 5xx/520 errors."""
+        """Execute an HTTP request against PayPal with automatic retry on transient 5xx/520 errors and 401 token refresh."""
         last_exc: Exception | None = None
         resp: httpx.Response | None = None
+        token_refreshed: bool = False
         for attempt in range(max_attempts):
             try:
                 if "headers" not in kwargs or use_request_id:
@@ -87,6 +93,17 @@ class PayPalClient:
                     kwargs["headers"] = self._headers(request_id=req_id)
                 with httpx.Client(timeout=self.timeout) as client:
                     resp = client.request(method, url, **kwargs)
+
+                # If token expired in-memory (401 Unauthorized), re-authenticate once and retry
+                if resp.status_code == 401 and not token_refreshed:
+                    auth_res = self.authenticate(force_refresh=True)
+                    if auth_res.authenticated:
+                        token_refreshed = True
+                        req_id = str(uuid.uuid4()) if use_request_id else None
+                        kwargs["headers"] = self._headers(request_id=req_id)
+                        with httpx.Client(timeout=self.timeout) as client:
+                            resp = client.request(method, url, **kwargs)
+
                 if resp.status_code < 500 and resp.status_code != 429:
                     return resp
             except Exception as exc:
@@ -108,7 +125,7 @@ class PayPalClient:
             if (
                 data.get("client_prefix") == client_prefix
                 and data.get("mode") == self.settings.paypal_mode
-                and time.time() < expires_at - 60
+                and time.time() < expires_at - 300
             ):
                 return data
         except Exception:
@@ -136,15 +153,17 @@ class PayPalClient:
             pass
 
     def authenticate(self, force_refresh: bool = False) -> PayPalAuthResult:
-        """Acquire OAuth 2.0 Bearer token via POST /v1/oauth2/token."""
+        """Acquire OAuth 2.0 Bearer token via POST /v1/oauth2/token with double-checked thread locking."""
         if not self.settings.has_paypal_credentials:
             return PayPalAuthResult(
                 authenticated=False,
                 mode=self.settings.paypal_mode,
                 base_url=self.settings.paypal_base_url,
+                error_type="MISSING_CREDENTIALS",
                 error="Missing PAYPAL_CLIENT_ID or PAYPAL_CLIENT_SECRET in .env",
             )
 
+        # 1. Fast path: check cached token without acquiring lock
         if not force_refresh:
             cached = self._load_cached_token()
             if cached and cached.get("access_token"):
@@ -165,64 +184,93 @@ class PayPalClient:
                     cached=True,
                 )
 
-        url = f"{self.settings.paypal_base_url}/v1/oauth2/token"
-        start = time.perf_counter()
-        try:
-            resp: httpx.Response | None = None
-            for attempt in range(3):
-                with httpx.Client(timeout=self.timeout) as client:
-                    resp = client.post(
-                        url,
-                        auth=(self.settings.paypal_client_id, self.settings.paypal_client_secret),
-                        headers={
-                            "Accept": "application/json",
-                            "Accept-Language": "en_US",
-                        },
-                        data={"grant_type": "client_credentials"},
+        # 2. Synchronized path: acquire mutex lock and re-validate cache (double-checked locking)
+        with _GLOBAL_AUTH_LOCK:
+            if not force_refresh:
+                cached = self._load_cached_token()
+                if cached and cached.get("access_token"):
+                    token = cached["access_token"]
+                    self._access_token = token
+                    self._token_meta = cached
+                    scopes = [s for s in cached.get("scope", "").split(" ") if s]
+                    return PayPalAuthResult(
+                        authenticated=True,
+                        mode=self.settings.paypal_mode,
+                        base_url=self.settings.paypal_base_url,
+                        app_id=cached.get("app_id", ""),
+                        access_token_preview=f"{token[:10]}...{token[-6:]}" if len(token) > 16 else "***",
+                        expires_in=int(cached.get("expires_at", time.time()) - time.time()),
+                        scopes=scopes,
+                        nonce=cached.get("nonce", ""),
+                        latency_ms=float(cached.get("latency_ms", 0.0)),
+                        cached=True,
                     )
-                if resp.status_code < 500:
-                    break
-                if attempt < 2:
-                    time.sleep(0.5 * (attempt + 1))
-            assert resp is not None
-            latency_ms = round((time.perf_counter() - start) * 1000, 1)
-            if resp.status_code != 200:
+
+            url = f"{self.settings.paypal_base_url}/v1/oauth2/token"
+            start = time.perf_counter()
+            try:
+                resp: httpx.Response | None = None
+                for attempt in range(3):
+                    with httpx.Client(timeout=self.timeout) as client:
+                        resp = client.post(
+                            url,
+                            auth=(self.settings.paypal_client_id, self.settings.paypal_client_secret),
+                            headers={
+                                "Accept": "application/json",
+                                "Accept-Language": "en_US",
+                            },
+                            data={"grant_type": "client_credentials"},
+                        )
+                    if resp.status_code < 500:
+                        break
+                    if attempt < 2:
+                        time.sleep(0.5 * (attempt + 1))
+                assert resp is not None
+                latency_ms = round((time.perf_counter() - start) * 1000, 1)
+                if resp.status_code != 200:
+                    err_type = "AUTH_FAILED" if resp.status_code in (400, 401, 403) else "GATEWAY_ERROR"
+                    return PayPalAuthResult(
+                        authenticated=False,
+                        mode=self.settings.paypal_mode,
+                        base_url=self.settings.paypal_base_url,
+                        latency_ms=latency_ms,
+                        status_code=resp.status_code,
+                        error_type=err_type,
+                        error=f"HTTP {resp.status_code}: {resp.text[:250]}",
+                    )
+
+                data = resp.json()
+                token = data.get("access_token", "")
+                self._access_token = token
+                self._token_meta = data
+                self._save_cached_token(data, latency_ms)
+                scopes = [s for s in data.get("scope", "").split(" ") if s]
+
+                return PayPalAuthResult(
+                    authenticated=True,
+                    mode=self.settings.paypal_mode,
+                    base_url=self.settings.paypal_base_url,
+                    app_id=data.get("app_id", ""),
+                    access_token_preview=f"{token[:10]}...{token[-6:]}" if len(token) > 16 else "***",
+                    expires_in=int(data.get("expires_in", 0)),
+                    scopes=scopes,
+                    nonce=data.get("nonce", ""),
+                    latency_ms=latency_ms,
+                    status_code=200,
+                    cached=False,
+                )
+            except Exception as exc:
+                latency_ms = round((time.perf_counter() - start) * 1000, 1)
+                err_str = str(exc)
+                is_net = any(k in type(exc).__name__.lower() for k in ["timeout", "connect", "network", "dns"])
                 return PayPalAuthResult(
                     authenticated=False,
                     mode=self.settings.paypal_mode,
                     base_url=self.settings.paypal_base_url,
                     latency_ms=latency_ms,
-                    error=f"HTTP {resp.status_code}: {resp.text[:250]}",
+                    error_type="NETWORK_UNAVAILABLE" if is_net else "CLIENT_ERROR",
+                    error=err_str,
                 )
-
-            data = resp.json()
-            token = data.get("access_token", "")
-            self._access_token = token
-            self._token_meta = data
-            self._save_cached_token(data, latency_ms)
-            scopes = [s for s in data.get("scope", "").split(" ") if s]
-
-            return PayPalAuthResult(
-                authenticated=True,
-                mode=self.settings.paypal_mode,
-                base_url=self.settings.paypal_base_url,
-                app_id=data.get("app_id", ""),
-                access_token_preview=f"{token[:10]}...{token[-6:]}" if len(token) > 16 else "***",
-                expires_in=int(data.get("expires_in", 0)),
-                scopes=scopes,
-                nonce=data.get("nonce", ""),
-                latency_ms=latency_ms,
-                cached=False,
-            )
-        except Exception as exc:
-            latency_ms = round((time.perf_counter() - start) * 1000, 1)
-            return PayPalAuthResult(
-                authenticated=False,
-                mode=self.settings.paypal_mode,
-                base_url=self.settings.paypal_base_url,
-                latency_ms=latency_ms,
-                error=str(exc),
-            )
 
     def _headers(self, request_id: str | None = None) -> dict[str, str]:
         if not self._access_token:

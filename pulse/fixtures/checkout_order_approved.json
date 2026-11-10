@@ -1,0 +1,23 @@
+{
+  "id": "WH-SIM-ORDER-001",
+  "event_version": "1.0",
+  "create_time": "2026-11-10T12:00:00.000Z",
+  "resource_type": "checkout-order",
+  "event_type": "CHECKOUT.ORDER.APPROVED",
+  "summary": "Checkout order approved for $19.99 USD",
+  "resource": {
+    "id": "ORD-SIM-1999201",
+    "status": "APPROVED",
+    "intent": "CAPTURE",
+    "purchase_units": [
+      {
+        "reference_id": "default",
+        "amount": {
+          "currency_code": "USD",
+          "value": "19.99"
+        },
+        "custom_id": "v1.2.1|US|PulseCore Pro Developer License"
+      }
+    ]
+  }
+}

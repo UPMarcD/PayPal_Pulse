@@ -1,0 +1,22 @@
+{
+  "id": "WH-SIM-DISPUTE-001",
+  "event_version": "1.0",
+  "create_time": "2026-11-10T12:00:00.000Z",
+  "resource_type": "dispute",
+  "event_type": "CUSTOMER.DISPUTE.CREATED",
+  "summary": "Customer dispute created for PP-D-99881-US",
+  "resource": {
+    "dispute_id": "PP-D-99881-US",
+    "dispute_amount": {
+      "currency_code": "USD",
+      "value": "49.99"
+    },
+    "status": "OPEN",
+    "reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+    "dispute_life_cycle_stage": "CHARGEBACK",
+    "buyer_country": "US",
+    "release_version": "v1.2.1",
+    "description": "User reported license key webhook activation failure on Ubuntu Linux.",
+    "custom_id": "v1.2.1|US|PulseCore Pro"
+  }
+}

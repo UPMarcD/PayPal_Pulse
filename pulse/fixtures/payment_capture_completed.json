@@ -1,0 +1,31 @@
+{
+  "id": "WH-SIM-CAPTURE-001",
+  "event_version": "1.0",
+  "create_time": "2026-11-10T12:00:00.000Z",
+  "resource_type": "capture",
+  "event_type": "PAYMENT.CAPTURE.COMPLETED",
+  "summary": "Payment capture completed for $49.99 USD",
+  "resource": {
+    "id": "CAP-SIM-8849201",
+    "status": "COMPLETED",
+    "amount": {
+      "currency_code": "USD",
+      "value": "49.99"
+    },
+    "seller_receivable_breakdown": {
+      "gross_amount": {
+        "currency_code": "USD",
+        "value": "49.99"
+      },
+      "paypal_fee": {
+        "currency_code": "USD",
+        "value": "1.75"
+      },
+      "net_amount": {
+        "currency_code": "USD",
+        "value": "48.24"
+      }
+    },
+    "custom_id": "v1.2.1|US|PulseCore Pro"
+  }
+}

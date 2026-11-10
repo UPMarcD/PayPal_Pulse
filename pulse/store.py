@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import sqlite3
 import subprocess
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -266,6 +267,78 @@ class PulseStore:
             "release_version": release_version,
             "approve_url": order.approve_url,
         }
+
+    def record_webhook_event(self, event_data: dict[str, Any]) -> dict[str, Any]:
+        """Ingest a PayPal Webhook event payload (live or triggered) into the SQLite ledger."""
+        event_type = event_data.get("event_type", "").upper()
+        resource = event_data.get("resource", {})
+
+        if event_type in ("PAYMENT.CAPTURE.COMPLETED", "CHECKOUT.ORDER.APPROVED"):
+            order_id = resource.get("id", f"ORD-WH-{int(time.time())}")
+            amount_dict = resource.get("amount") or resource.get("dispute_amount") or {}
+            if not amount_dict and "seller_receivable_breakdown" in resource:
+                amount_dict = resource["seller_receivable_breakdown"].get("gross_amount", {})
+            amt = float(amount_dict.get("value", 19.99))
+            cur = str(amount_dict.get("currency_code", "USD")).upper()
+            custom_id = resource.get("custom_id", "v1.2.1|US|PulseCore Pro")
+            parts = custom_id.split("|")
+            release_ver = parts[0] if len(parts) > 0 and parts[0] else "v1.2.1"
+            country = parts[1] if len(parts) > 1 and parts[1] else "US"
+            sku = parts[2] if len(parts) > 2 and parts[2] else "PulseCore Pro"
+
+            order_res = PayPalOrderResult(
+                success=True,
+                order_id=order_id,
+                status=resource.get("status", "COMPLETED"),
+                amount=amt,
+                currency=cur,
+                description=f"Webhook Ingestion: {sku} ({release_ver})",
+                approve_url=f"https://www.sandbox.paypal.com/checkoutnow?token={order_id}",
+            )
+            return self.record_live_order(
+                order_res,
+                release_version=release_ver,
+                country_code=country,
+                platform_sku=sku,
+            )
+        elif event_type == "CUSTOMER.DISPUTE.CREATED":
+            dispute_id = resource.get("dispute_id", f"PP-D-{int(time.time())}-SIM")
+            amount_dict = resource.get("dispute_amount", {})
+            amt = float(amount_dict.get("value", 29.99))
+            cur = str(amount_dict.get("currency_code", "USD")).upper()
+            buyer_country = resource.get("buyer_country", "US")
+            buyer_email = resource.get("buyer_email", f"buyer-{dispute_id.lower()}@example.com")
+            release_ver = resource.get("release_version", "v1.2.1")
+            desc = resource.get("description", "Dispute triggered via webhook event.")
+            sku = resource.get("custom_id", "PulseCore Pro")
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            due_str = (datetime.now(timezone.utc) + timedelta(days=10)).strftime("%Y-%m-%d")
+
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO disputes (
+                        dispute_id, paypal_transaction_id, status, buyer_country,
+                        buyer_email, release_version, platform_sku, amount, currency,
+                        due_date, reason, description, created_at
+                    ) VALUES (?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, 'MERCHANDISE_OR_SERVICE_NOT_RECEIVED', ?, ?)
+                    ON CONFLICT(dispute_id) DO UPDATE SET status = 'OPEN'
+                    """,
+                    (dispute_id, f"TX-{dispute_id}", buyer_country, buyer_email, release_ver, sku, amt, cur, due_str, desc, now_str),
+                )
+                conn.execute(
+                    "UPDATE releases SET dispute_count = dispute_count + 1 WHERE version = ?",
+                    (release_ver,),
+                )
+                conn.commit()
+            return {"dispute_id": dispute_id, "status": "OPEN", "amount": amt, "currency": cur}
+        elif event_type == "CUSTOMER.DISPUTE.RESOLVED":
+            dispute_id = resource.get("dispute_id", "")
+            if dispute_id:
+                self.mark_dispute_resolved(dispute_id, "Resolved via webhook event", "PP-RESOLVE-WEBHOOK")
+            return {"dispute_id": dispute_id, "status": "RESOLVED"}
+
+        return {"event_type": event_type, "status": "IGNORED"}
 
     def seed_telemetry(
         self,
