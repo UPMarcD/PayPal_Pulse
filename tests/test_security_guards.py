@@ -341,7 +341,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
         }
     )
     assert p_non_receipt["problem_category"] == "Digital Fulfillment & Instant License Provisioning"
-    assert p_non_receipt["remediation_id"].startswith("PULSE-LIC-")
+    assert p_non_receipt["remediation_id"].startswith("DRAFT-LIC-")
     assert "Hello John Doe" in p_non_receipt["buyer_message"]
     assert "no additional payment required" in p_non_receipt["buyer_message"]
 
@@ -359,7 +359,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
         }
     )
     assert p_defect["problem_category"] == "Technical Defect Remediation & Patched License"
-    assert p_defect["remediation_id"].startswith("PULSE-PATCH-")
+    assert p_defect["remediation_id"].startswith("DRAFT-PATCH-")
     assert "90-day Pro extension" in p_defect["buyer_message"]
 
     # 3. Duplicate charge / billing error
@@ -376,7 +376,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
     )
     assert p_dup["problem_category"] == "Billing Reconciliation & Full Refund"
     assert p_dup["resolution_strategy"] == "ACCEPT_AND_REFUND"
-    assert p_dup["remediation_id"].startswith("PP-REFUND-")
+    assert p_dup["remediation_id"].startswith("DRAFT-REFUND-")
     assert PayPalClient.select_evidence_type_for_reason("DUPLICATE_TRANSACTION") == "PROOF_OF_REFUND"
 
     # 4. Subscription cancellation
@@ -393,7 +393,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
     )
     assert p_sub["problem_category"] == "Subscription Termination & Cycle Refund"
     assert p_sub["resolution_strategy"] == "ACCEPT_AND_REFUND"
-    assert p_sub["remediation_id"].startswith("SUB-CANCEL-")
+    assert p_sub["remediation_id"].startswith("DRAFT-SUB-")
 
     # 5. Unauthorized claim
     p_unauth = diagnose_dispute_and_remediate(
@@ -408,7 +408,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
         }
     )
     assert p_unauth["problem_category"] == "Security Audit & Credential Revocation"
-    assert p_unauth["remediation_id"].startswith("SEC-AUDIT-")
+    assert p_unauth["remediation_id"].startswith("DRAFT-SEC-")
     assert PayPalClient.select_evidence_type_for_reason("UNAUTHORISED") == "OTHER"
 
     # 6. Verify sync_external_disputes extracts full PayPal dispute details

@@ -108,7 +108,7 @@ class HelpModal(ModalScreen[None]):
             yield Static("[bold #e5a824]Tabs & Views[/bold #e5a824]")
             yield Static("  [bold #f0f6fc]1[/bold #f0f6fc] or [bold #f0f6fc]d[/bold #f0f6fc]    Dashboard & 30-Day Financial KPIs")
             yield Static("  [bold #f0f6fc]2[/bold #f0f6fc] or [bold #f0f6fc]t[/bold #f0f6fc]    Git Release-to-Revenue Correlation Timeline")
-            yield Static("  [bold #f0f6fc]3[/bold #f0f6fc] or [bold #f0f6fc]o[/bold #f0f6fc]    Live PayPal Sandbox Orders & Invoicing")
+            yield Static("  [bold #f0f6fc]3[/bold #f0f6fc] or [bold #f0f6fc]o[/bold #f0f6fc]    Live PayPal Orders & Invoicing")
             yield Static("  [bold #f0f6fc]4[/bold #f0f6fc] or [bold #f0f6fc]x[/bold #f0f6fc]    Customer Disputes & Evidence Drafter")
             yield Static("  [bold #f0f6fc]5[/bold #f0f6fc] or [bold #f0f6fc]a[/bold #f0f6fc]    Pulse AI Copilot Interactive Log")
             yield Static("  [bold #f0f6fc]6[/bold #f0f6fc] or [bold #f0f6fc]s[/bold #f0f6fc]    Engine Settings & BYOK AI Configuration\n")
@@ -557,8 +557,8 @@ class PayPalPulseTUI(App):
             with TabPane("[3] Orders", id="tab-orders"):
                 with Vertical():
                     yield Static(
-                        "[bold #58a6ff]Create Real PayPal Sandbox Order (POST /v2/checkout/orders)[/bold #58a6ff]\n"
-                        "[dim]Mints a live PayPal Sandbox Order ID and records it immediately into the Dual-Engine SQLite ledger.[/dim]",
+                        "[bold #58a6ff]Create Real PayPal Order[/bold #58a6ff]\n"
+                        "[dim]Mints a live PayPal Order ID and records it immediately into the Dual-Engine SQLite ledger.[/dim]",
                         classes="section-box",
                     )
                     proj_ctx = detect_project_context()
@@ -580,7 +580,7 @@ class PayPalPulseTUI(App):
                             placeholder="Description",
                             id="order-desc",
                         )
-                        yield Button("Create Live Sandbox Order", variant="primary", id="btn-create-order")
+                        yield Button("Create Live Order", variant="primary", id="btn-create-order")
                         yield Button("Checkout in PayPal ↗", variant="default", id="btn-open-order-browser", disabled=True)
                         yield Button("Capture Order ✓", variant="success", id="btn-capture-order", disabled=True)
                     yield RichLog(id="order-log", highlight=True, markup=True, wrap=True)
@@ -623,11 +623,11 @@ class PayPalPulseTUI(App):
                         yield Static(
                             format_mascot_header(
                                 title="Pulse AI Copilot",
-                                subtitle="Real-time Financial Telemetry & PayPal Sandbox Bridge",
+                                subtitle="Real-time Financial Telemetry & PayPal Bridge",
                                 state="idle",
                             )
                             + "\n\nAsk anything about your 30-day multi-currency ledger, release conversion velocity, "
-                            "or active buyer disputes — or instruct Pulse to mint live PayPal Sandbox orders & invoices.",
+                            "or active buyer disputes — or instruct Pulse to mint live PayPal orders & invoices.",
                             classes="claude-welcome-card",
                         )
                     with Vertical(id="copilot-bottom-dock"):
@@ -734,7 +734,7 @@ class PayPalPulseTUI(App):
         self._run_auth_check_worker(force_refresh=False)
         order_log = self.query_one("#order-log", RichLog)
         order_log.write(
-            "[dim]Ready to mint live PayPal Sandbox Orders (`POST /v2/checkout/orders`). Click 'Checkout in PayPal ↗' to test live payment flow.[/dim]"
+            "[dim]Ready to mint live PayPal Orders. Click 'Checkout in PayPal ↗' to test live payment flow.[/dim]"
         )
         dispute_log = self.query_one("#dispute-log", RichLog)
         dispute_log.write(
@@ -796,12 +796,12 @@ class PayPalPulseTUI(App):
     def _setup_tables(self) -> None:
         cur_table = self.query_one("#currency-table", DataTable)
         cur_table.add_columns(
-            "Currency", "Tx Count", "Gross", "PayPal Fees", "Fee Drag %", "True Net", "Net Margin %", "USD Equiv Net"
+            "Currency", "Tx Count", "Gross", "PayPal Fees", "True Net", "USD Equiv Net"
         )
 
         tl_table = self.query_one("#timeline-table", DataTable)
         tl_table.add_columns(
-            "Version", "Commit", "Released", "Customers", "Paid", "Conv %", "True Net (USD)", "Refunds", "Disputes", "Status"
+            "Version", "Commit", "Released", "Installs", "Paid", "True Net (USD)", "Disputes", "Status"
         )
 
         disp_table = self.query_one("#disputes-table", DataTable)
@@ -1035,9 +1035,7 @@ class PayPalPulseTUI(App):
                     str(c["tx_count"]),
                     gross_str,
                     fees_str,
-                    f"{c['fee_pct']}%",
                     net_str,
-                    f"{c['net_margin_pct']}%",
                     f"${c['usd_net']:,.2f}",
                 )
             )
@@ -1062,9 +1060,7 @@ class PayPalPulseTUI(App):
                     r["released_at"],
                     f"{cust_val:,}",
                     f"{order_val:,}",
-                    f"{r['conversion_rate']}%",
                     f"${r['net_usd']:,.2f}",
-                    str(r["refund_count"]),
                     str(r["dispute_count"]),
                     r["status_badge"],
                 )
@@ -1170,7 +1166,7 @@ class PayPalPulseTUI(App):
 
         effective_release = rel_str or proj_ctx.get("version") or parse_release_version(desc_str, default="v1.2.1")
         btn.disabled = True
-        log.write(f"[cyan]● Minting PayPal Sandbox Order for {amt:.2f} {cur_str} ({effective_release})...[/cyan]")
+        log.write(f"[cyan]● Minting PayPal Order for {amt:.2f} {cur_str} ({effective_release})...[/cyan]")
         return self._run_create_order_worker(amt, cur_str, desc_str, effective_release, default_sku)
 
     @work(thread=True, exclusive=True, group="create-order")
@@ -1202,7 +1198,7 @@ class PayPalPulseTUI(App):
             capture_btn.disabled = False
             if self.settings.auto_capture and not self.settings.demo_mode:
                 log.write(
-                    f"[bold green][OK] Live PayPal Sandbox Order Created![/bold green]\n"
+                    f"[bold green][OK] Live PayPal Order Created![/bold green]\n"
                     f"  • Order ID: [bold]{res.order_id}[/bold]\n"
                     f"  • Status: {res.status}\n"
                     f"  • Approval URL: [bold underline cyan]{res.approve_url}[/bold underline cyan]\n"
@@ -1210,7 +1206,7 @@ class PayPalPulseTUI(App):
                 )
             else:
                 log.write(
-                    f"[bold green][OK] Live PayPal Sandbox Order Created![/bold green]\n"
+                    f"[bold green][OK] Live PayPal Order Created![/bold green]\n"
                     f"  • Order ID: [bold]{res.order_id}[/bold]\n"
                     f"  • Status: {res.status}\n"
                     f"  • Approval URL: [bold underline cyan]{res.approve_url}[/bold underline cyan]\n"
@@ -1542,7 +1538,7 @@ class PayPalPulseTUI(App):
             log.write(
                 f"[bold green][OK] Dispute {dispute_id} is Officially RESOLVED![/bold green]\n"
                 f"  • Gateway Status: Closed by PayPal Resolution Center\n"
-                f"  • Replacement Sandbox Order ID: [bold]{order_id}[/bold]\n"
+                f"  • Replacement Order ID: [bold]{order_id}[/bold]\n"
                 f"  • AI Engine: {model_used}\n"
                 f"  • Formal Evidence Package on File:"
             )
@@ -1554,7 +1550,7 @@ class PayPalPulseTUI(App):
                 f"[bold yellow][SUBMITTED] Evidence Package Transmitted for {dispute_id}[/bold yellow]\n"
                 f"  • Gateway Status: [bold cyan]{updated_status}[/bold cyan] (Pending Buyer / PayPal Adjudication)\n"
                 f"  • Settlement Hold: Funds remain held until PayPal or buyer confirms resolution.\n"
-                f"  • Replacement Sandbox Order ID: [bold]{order_id}[/bold]\n"
+                f"  • Replacement Order ID: [bold]{order_id}[/bold]\n"
                 f"  • AI Engine: {model_used}\n"
                 f"  • Formal Evidence Package on File:"
             )

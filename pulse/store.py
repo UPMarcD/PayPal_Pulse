@@ -82,6 +82,17 @@ ZERO_DECIMAL_CURRENCIES = {"JPY", "HUF", "TWD"}
 PAID_TRANSACTION_STATUSES = ("COMPLETED", "CAPTURED", "DISPUTED")
 PENDING_TRANSACTION_STATUSES = ("CREATED", "APPROVED", "PENDING")
 
+# PayPal dispute states that still need seller action. Exact matches on "OPEN"
+# miss every dispute that has moved to WAITING_FOR_SELLER_RESPONSE or
+# REQUIRED_ACTION.
+OPEN_DISPUTE_STATUSES = (
+    "OPEN",
+    "WAITING_FOR_SELLER_RESPONSE",
+    "WAITING_FOR_BUYER_RESPONSE",
+    "REQUIRED_ACTION",
+    "UNDER_REVIEW",
+)
+
 
 def format_currency_amount(amount: float, currency: str) -> str:
     """Format numeric amount according to PayPal REST API decimal rules.
@@ -656,6 +667,88 @@ class PulseStore:
         with self._connect() as conn:
             return [dict(row) for row in conn.execute(query, params).fetchall()]
 
+    def _ensure_release(
+        self, conn: sqlite3.Connection, version: str, title: str | None = None
+    ) -> None:
+        """Create a minimal release row so a rollup never targets a missing row."""
+        if not version:
+            return
+        exists = conn.execute(
+            "SELECT version FROM releases WHERE version = ?", (version,)
+        ).fetchone()
+        if exists:
+            return
+        now_ymd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        conn.execute(
+            """
+            INSERT INTO releases (
+                version, title, released_at, git_commit, installs, active_users,
+                trial_starts, paid_conversions, conversion_rate, gross_usd,
+                fees_usd, net_usd, refund_count, dispute_count, status_badge, ai_diagnostic
+            ) VALUES (?, ?, ?, 'HEAD', 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 'ACTIVE', ?)
+            """,
+            (
+                version,
+                title or f"{version} (Release)",
+                now_ymd,
+                "Recorded from a captured PayPal transaction.",
+            ),
+        )
+
+    def _apply_paid_rollup(
+        self,
+        conn: sqlite3.Connection,
+        release_version: str,
+        usd_gross: float,
+        usd_fee: float,
+        usd_net: float,
+        day_date: str,
+    ) -> None:
+        """Add one captured payment to the release and daily rollups."""
+        self._ensure_release(conn, release_version)
+        conn.execute(
+            """
+            UPDATE releases
+            SET paid_conversions = paid_conversions + 1,
+                conversion_rate = CASE
+                    WHEN installs > 0 THEN ROUND(((paid_conversions + 1) * 100.0) / installs, 2)
+                    ELSE 0.0
+                END,
+                gross_usd = ROUND(gross_usd + ?, 2),
+                fees_usd = ROUND(fees_usd + ?, 2),
+                net_usd = ROUND(net_usd + ?, 2)
+            WHERE version = ?
+            """,
+            (usd_gross, usd_fee, usd_net, release_version),
+        )
+        day = str(day_date or "")[:10]
+        if not day:
+            return
+        row = conn.execute(
+            "SELECT day_date FROM daily_metrics WHERE day_date = ?", (day,)
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE daily_metrics
+                SET paid_orders = paid_orders + 1,
+                    gross_usd = ROUND(gross_usd + ?, 2),
+                    fees_usd = ROUND(fees_usd + ?, 2),
+                    net_usd = ROUND(net_usd + ?, 2)
+                WHERE day_date = ?
+                """,
+                (usd_gross, usd_fee, usd_net, day),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO daily_metrics (
+                    day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
+                ) VALUES (?, 0, 1, ?, ?, ?, 0, ?)
+                """,
+                (day, usd_gross, usd_fee, usd_net, release_version),
+            )
+
     def record_live_order(
         self,
         order: PayPalOrderResult,
@@ -663,6 +756,8 @@ class PulseStore:
         country_code: str = "US",
         platform_sku: str | None = None,
         device_model: str | None = None,
+        fee_override: float | None = None,
+        net_override: float | None = None,
     ) -> dict[str, Any]:
         """Insert a freshly created live PayPal Sandbox order into the instant local ledger."""
         cur = order.currency.upper()
@@ -675,8 +770,18 @@ class PulseStore:
         effective_sku = clean_model or clean_platform or default_sku
         fx = FX_TO_USD.get(cur, 1.0)
         cross_border = country_code.upper() != "US" or cur != "USD"
-        fee = compute_paypal_fee(order.amount, cur, cross_border=cross_border)
-        net = round(order.amount - fee, 2)
+        # A captured payment carries PayPal's real fee and net. Use them when
+        # the caller has them; only fall back to the local fee model otherwise.
+        fee = (
+            round(float(fee_override), 2)
+            if fee_override is not None
+            else compute_paypal_fee(order.amount, cur, cross_border=cross_border)
+        )
+        net = (
+            round(float(net_override), 2)
+            if net_override is not None
+            else round(order.amount - fee, 2)
+        )
         usd_gross = round(order.amount * fx, 2)
         usd_fee = round(fee * fx, 2)
         usd_net = round(net * fx, 2)
@@ -833,12 +938,31 @@ class PulseStore:
         platform_sku: str = "Captured Order",
     ) -> bool:
         """Update transaction status or upsert captured order into ledger."""
+        new_status = str(status or "").upper()
+        is_paid = new_status in PAID_TRANSACTION_STATUSES
         with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT status, release_version, usd_gross, usd_fee, usd_net, created_at "
+                "FROM transactions WHERE paypal_id = ?",
+                (paypal_id,),
+            ).fetchone()
             cursor = conn.execute(
                 "UPDATE transactions SET status = ? WHERE paypal_id = ?",
                 (status, paypal_id),
             )
             if cursor.rowcount > 0:
+                was_paid = bool(existing) and str(
+                    existing["status"] or ""
+                ).upper() in PAID_TRANSACTION_STATUSES
+                if existing and is_paid and not was_paid:
+                    self._apply_paid_rollup(
+                        conn,
+                        existing["release_version"] or release_version,
+                        float(existing["usd_gross"] or 0.0),
+                        float(existing["usd_fee"] or 0.0),
+                        float(existing["usd_net"] or 0.0),
+                        str(existing["created_at"] or "")[:10],
+                    )
                 conn.commit()
                 return True
 
@@ -876,6 +1000,15 @@ class PulseStore:
                         status,
                     ),
                 )
+                if is_paid:
+                    self._apply_paid_rollup(
+                        conn,
+                        release_version,
+                        round(amount * fx, 2),
+                        round(fee * fx, 2),
+                        round(net * fx, 2),
+                        now_str[:10],
+                    )
                 conn.commit()
                 return True
             conn.commit()
@@ -893,11 +1026,24 @@ class PulseStore:
 
         if event_type in ("PAYMENT.CAPTURE.COMPLETED", "CHECKOUT.ORDER.APPROVED"):
             order_id = resource.get("id", f"ORD-WH-{int(time.time())}")
+            breakdown = resource.get("seller_receivable_breakdown") or {}
             amount_dict = resource.get("amount") or resource.get("dispute_amount") or {}
-            if not amount_dict and "seller_receivable_breakdown" in resource:
-                amount_dict = resource["seller_receivable_breakdown"].get("gross_amount", {})
+            if not amount_dict and breakdown:
+                amount_dict = breakdown.get("gross_amount", {})
             amt = float(amount_dict.get("value", ctx.get("default_price", 19.99)))
             cur = str(amount_dict.get("currency_code", default_cur)).upper()
+
+            def _breakdown_value(key: str) -> float | None:
+                raw = (breakdown.get(key) or {}).get("value")
+                if raw is None:
+                    return None
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return None
+
+            fee_override = _breakdown_value("paypal_fee")
+            net_override = _breakdown_value("net_amount")
             raw_custom = resource.get("custom_id")
             release_ver = parse_release_version(raw_custom, default=default_rel)
             parts = str(raw_custom).split("|") if raw_custom else []
@@ -918,6 +1064,8 @@ class PulseStore:
                 release_version=release_ver,
                 country_code=country,
                 platform_sku=sku,
+                fee_override=fee_override,
+                net_override=net_override,
             )
         elif event_type == "CUSTOMER.DISPUTE.CREATED":
             dispute_id = resource.get("dispute_id", f"PP-D-{int(time.time())}-SIM")
@@ -1307,20 +1455,29 @@ class PulseStore:
         return self.seed_telemetry(live_orders=live_orders, live_invoice=live_invoice)
 
     def get_currency_breakdown(
-        self, statuses: tuple[str, ...] | None = None
+        self,
+        statuses: tuple[str, ...] | None = None,
+        since_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return multi-currency gross, fee drag, and net take-home breakdown.
 
         When ``statuses`` is given, only transactions in those statuses are
         summed. Pass PAID_TRANSACTION_STATUSES for revenue, and
         PENDING_TRANSACTION_STATUSES for orders that are not yet captured.
+        When ``since_days`` is given, only transactions created inside that
+        window are summed. The dashboard labels its totals as 30-day, so the
+        caller must pass 30 to make that label true.
         """
-        where = ""
-        params: tuple[Any, ...] = ()
+        clauses: list[str] = []
+        params: list[Any] = []
         if statuses:
             placeholders = ", ".join("?" for _ in statuses)
-            where = f"WHERE UPPER(status) IN ({placeholders})"
-            params = tuple(s.upper() for s in statuses)
+            clauses.append(f"UPPER(status) IN ({placeholders})")
+            params.extend(s.upper() for s in statuses)
+        if since_days is not None:
+            clauses.append("date(created_at) >= date('now', ?)")
+            params.append(f"-{int(since_days)} days")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1338,7 +1495,7 @@ class PulseStore:
                 GROUP BY currency
                 ORDER BY usd_gross DESC
                 """,
-                params,
+                tuple(params),
             ).fetchall()
 
         results = []
@@ -1588,24 +1745,10 @@ class PulseStore:
             return self._git_tags_cache
 
         meta = self._discover_git_tag_metadata()
+        # Only real tags count. `git describe --always` returns a bare commit
+        # hash when the repository has no tags, which would render a SHA as a
+        # release in the timeline.
         tags: list[str] = list(meta.keys())
-
-        if not tags:
-            try:
-                proc_desc = subprocess.run(
-                    ["git", "describe", "--tags", "--always"],
-                    cwd=str(Path.cwd()),
-                    capture_output=True,
-                    text=True,
-                    timeout=2,
-                    check=False,
-                )
-                if proc_desc.returncode == 0 and proc_desc.stdout.strip():
-                    val = proc_desc.stdout.strip()
-                    if val and val not in tags:
-                        tags.append(val)
-            except Exception:
-                pass
 
         self._git_tags_cache = tags
         return self._git_tags_cache
@@ -1615,8 +1758,10 @@ class PulseStore:
         with self._connect() as conn:
             if status_filter:
                 if status_filter.upper() == "OPEN":
+                    placeholders = ", ".join("?" for _ in OPEN_DISPUTE_STATUSES)
                     rows = conn.execute(
-                        "SELECT * FROM disputes WHERE UPPER(status) IN ('OPEN', 'WAITING_FOR_SELLER_RESPONSE', 'REQUIRED_ACTION', 'UNDER_REVIEW') ORDER BY created_at DESC"
+                        f"SELECT * FROM disputes WHERE UPPER(status) IN ({placeholders}) ORDER BY created_at DESC",
+                        OPEN_DISPUTE_STATUSES,
                     ).fetchall()
                 else:
                     rows = conn.execute(
@@ -1774,9 +1919,11 @@ class PulseStore:
         api_connected: bool = True,
     ) -> dict[str, Any]:
         """Compute complete KPI summary for `pp pulse`, `pp ask`, and `pp tui`."""
-        currencies = self.get_currency_breakdown(statuses=PAID_TRANSACTION_STATUSES)
+        currencies = self.get_currency_breakdown(
+            statuses=PAID_TRANSACTION_STATUSES, since_days=30
+        )
         pending_currencies = self.get_currency_breakdown(
-            statuses=PENDING_TRANSACTION_STATUSES
+            statuses=PENDING_TRANSACTION_STATUSES, since_days=30
         )
         releases = self.get_releases(include_git_tags=False)
         disputes = self.get_disputes()
@@ -2349,7 +2496,9 @@ class PulseStore:
                 country = custom_country or country
                 prod_name = item_name or f"{sku} ({rel_ver})"
 
-                existing = conn.execute("SELECT id FROM transactions WHERE paypal_id = ?", (tx_id,)).fetchone()
+                existing = conn.execute(
+                    "SELECT id, status FROM transactions WHERE paypal_id = ?", (tx_id,)
+                ).fetchone()
                 conn.execute(
                     """
                     INSERT INTO transactions (
@@ -2378,7 +2527,28 @@ class PulseStore:
                         status,
                     ),
                 )
+                was_paid = bool(existing) and str(
+                    existing["status"] or ""
+                ).upper() in PAID_TRANSACTION_STATUSES
                 if not existing:
                     added += 1
+                    if status in PAID_TRANSACTION_STATUSES:
+                        self._apply_paid_rollup(
+                            conn,
+                            rel_ver,
+                            usd_gross,
+                            usd_fee,
+                            usd_net,
+                            str(created_at)[:10],
+                        )
+                elif status in PAID_TRANSACTION_STATUSES and not was_paid:
+                    self._apply_paid_rollup(
+                        conn,
+                        rel_ver,
+                        usd_gross,
+                        usd_fee,
+                        usd_net,
+                        str(created_at)[:10],
+                    )
             conn.commit()
         return added

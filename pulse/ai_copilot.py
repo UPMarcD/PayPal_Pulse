@@ -799,9 +799,17 @@ def ask_copilot(
                         replacement_order=rep_order,
                     )
                     rep_id = rep_order.order_id if rep_order and rep_order.success else plan["remediation_id"]
-                    st.resolve_dispute(dispute_id=target_dispute_id, ai_evidence=ev_text, replacement_order_id=rep_id)
-                    dispute_resolved_info = f"{target_dispute_id} ({plan['problem_category']}; Ref {rep_id})"
-                    act_str = f"Auto-diagnosed ({plan['problem_category']}) & resolved dispute {target_dispute_id} (Ref {rep_id})"
+                    if sandbox_res.get("ok"):
+                        st.resolve_dispute(dispute_id=target_dispute_id, ai_evidence=ev_text, replacement_order_id=rep_id)
+                        dispute_resolved_info = f"{target_dispute_id} ({plan['problem_category']}; Ref {rep_id})"
+                        act_str = f"Auto-diagnosed ({plan['problem_category']}) & resolved dispute {target_dispute_id} (Ref {rep_id})"
+                    else:
+                        status_txt = sandbox_res.get("dispute_api_status", "NOT_SENT")
+                        dispute_resolved_info = f"{target_dispute_id} (NOT RESOLVED: {status_txt})"
+                        act_str = (
+                            f"Attempted dispute remediation for {target_dispute_id}; "
+                            f"PayPal did not accept the evidence ({status_txt})"
+                        )
                     executed_action = f"{executed_action} | {act_str}" if executed_action else act_str
 
     summary = st.get_dashboard_summary()
@@ -977,15 +985,16 @@ def diagnose_dispute_and_remediate(
     order_ref = (
         replacement_order.order_id
         if replacement_order and replacement_order.success
-        else f"PP-REF-{hash_hex[:8]}"
+        else f"DRAFT-REF-{hash_hex[:8]}"
     )
+    activation_url = ""
 
     desc_low = raw_desc.lower()
     # Classify across 5 comprehensive dispute problem archetypes
     if reason in ("DUPLICATE_TRANSACTION", "INCORRECT_AMOUNT", "CREDIT_NOT_PROCESSED") or any(
         k in desc_low for k in ("duplicate", "twice", "double", "overcharge", "wrong amount", "charged twice")
     ):
-        remediation_id = f"PP-REFUND-{hash_hex[:8]}"
+        remediation_id = f"DRAFT-REFUND-{hash_hex[:8]}"
         problem_category = "Billing Reconciliation & Full Refund"
         resolution_strategy = "ACCEPT_AND_REFUND"
         root_cause = (
@@ -1005,7 +1014,7 @@ def diagnose_dispute_and_remediate(
     elif reason == "CANCELED_RECURRING_BILLING" or any(
         k in desc_low for k in ("cancel", "subscription", "recurring", "auto-renew", "stop charging", "unsubscribe")
     ):
-        remediation_id = f"SUB-CANCEL-{hash_hex[:8]}"
+        remediation_id = f"DRAFT-SUB-{hash_hex[:8]}"
         problem_category = "Subscription Termination & Cycle Refund"
         resolution_strategy = "ACCEPT_AND_REFUND"
         root_cause = (
@@ -1024,7 +1033,7 @@ def diagnose_dispute_and_remediate(
     elif reason == "UNAUTHORISED" or any(
         k in desc_low for k in ("unauthorised", "unauthorized", "fraud", "didn't authorize", "hacked", "stolen", "unrecognized")
     ):
-        remediation_id = f"SEC-AUDIT-{hash_hex[:8]}"
+        remediation_id = f"DRAFT-SEC-{hash_hex[:8]}"
         problem_category = "Security Audit & Credential Revocation"
         resolution_strategy = "FULFILL_AND_EVIDENCE"
         root_cause = (
@@ -1043,8 +1052,8 @@ def diagnose_dispute_and_remediate(
     elif reason in ("SIGNIFICANTLY_NOT_AS_DESCRIBED", "DEFECTIVE_ITEM") or any(
         k in desc_low for k in ("bug", "crash", "error", "broken", "doesn't work", "not working", "defect", "issue", "fail")
     ):
-        remediation_id = f"PULSE-PATCH-{hash_hex[:4]}-{hash_hex[4:8]}-{hash_hex[8:12]}"
-        activation_url = f"https://portal.paypalpulse.dev/DownloadPatch?key={remediation_id}&tx={tx_id}"
+        remediation_id = f"DRAFT-PATCH-{hash_hex[:4]}-{hash_hex[4:8]}-{hash_hex[8:12]}"
+        activation_url = "[pending: merchant must supply a download link]"
         problem_category = "Technical Defect Remediation & Patched License"
         resolution_strategy = "FULFILL_AND_EVIDENCE"
         root_cause = (
@@ -1065,8 +1074,8 @@ def diagnose_dispute_and_remediate(
         )
     else:
         # Default / MERCHANDISE_OR_SERVICE_NOT_RECEIVED / general customer help ("he[p", missing key, access)
-        remediation_id = f"PULSE-LIC-{hash_hex[:4]}-{hash_hex[4:8]}-{hash_hex[8:12]}"
-        activation_url = f"https://portal.paypalpulse.dev/activate?key={remediation_id}&tx={tx_id}"
+        remediation_id = f"DRAFT-LIC-{hash_hex[:4]}-{hash_hex[4:8]}-{hash_hex[8:12]}"
+        activation_url = "[pending: merchant must supply an activation link]"
         problem_category = "Digital Fulfillment & Instant License Provisioning"
         resolution_strategy = "FULFILL_AND_EVIDENCE"
         root_cause = (
@@ -1086,6 +1095,16 @@ def diagnose_dispute_and_remediate(
             f"- Entitlement Audit ID: {order_ref}\n"
             f"Please reply directly in this thread if you need any hands-on setup help."
         )
+
+    # Pulse does not execute refunds, revoke licenses, or host downloads. The
+    # narrative is a draft the merchant must act on, so label it and remove any
+    # URL that implies a live artifact exists.
+    placeholder_url = "[pending: merchant must supply a download or activation link]"
+    if activation_url:
+        fix_applied = fix_applied.replace(activation_url, placeholder_url)
+        buyer_message = buyer_message.replace(activation_url, placeholder_url)
+    fix_applied = f"DRAFT ONLY (not executed): {fix_applied}"
+    buyer_message = f"[DRAFT - review before sending]\n{buyer_message}"
 
     return {
         "dispute_id": disp_id,

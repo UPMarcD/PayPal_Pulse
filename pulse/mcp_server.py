@@ -14,7 +14,7 @@ from typing import Any
 
 from pulse.config import PulseSettings, get_settings
 from pulse.paypal_client import PayPalClient
-from pulse.store import PulseStore, detect_project_context
+from pulse.store import OPEN_DISPUTE_STATUSES, PulseStore, detect_project_context
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -132,7 +132,11 @@ def handle_tool_call(name: str, arguments: dict[str, Any], settings: PulseSettin
         only_open = arguments.get("only_open", True)
         disputes = store.get_disputes()
         if only_open:
-            disputes = [d for d in disputes if d.get("status") == "OPEN"]
+            disputes = [
+                d
+                for d in disputes
+                if str(d.get("status") or "").upper() in OPEN_DISPUTE_STATUSES
+            ]
         return {"content": [{"type": "text", "text": json.dumps(disputes, indent=2)}], "isError": False}
 
     if name == "pulse_draft_dispute_evidence":

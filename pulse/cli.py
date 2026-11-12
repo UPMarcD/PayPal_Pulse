@@ -1147,17 +1147,22 @@ def cmd_disputes(
                 platform_sku=sku_val,
             )
         updated_status = sandbox_res.get("updated_status") or "UNDER_REVIEW"
-        store.mark_dispute_resolved(
-            dispute_id,
-            evidence_text,
-            order_id_str,
-            new_status=updated_status,
-        )
+        if sandbox_res.get("ok"):
+            store.mark_dispute_resolved(
+                dispute_id,
+                evidence_text,
+                order_id_str,
+                new_status=updated_status,
+            )
+        else:
+            updated_status = "EVIDENCE_REJECTED"
 
         if json_output:
             out_res = {
                 "dispute_id": dispute_id,
                 "status": updated_status,
+                "ok": bool(sandbox_res.get("ok")),
+                "error": sandbox_res.get("error", ""),
                 "officially_resolved": updated_status.upper() in ("RESOLVED", "CLOSED"),
                 "problem_category": plan["problem_category"],
                 "resolution_strategy": plan["resolution_strategy"],

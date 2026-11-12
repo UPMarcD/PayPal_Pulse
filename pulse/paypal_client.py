@@ -365,42 +365,59 @@ class PayPalClient:
         end_date: datetime | None = None,
         page_size: int = 100,
     ) -> dict[str, Any]:
-        """Call GET /v1/reporting/transactions on PayPal Sandbox (max 31-day window)."""
+        """Call GET /v1/reporting/transactions on PayPal Sandbox (max 31-day window).
+
+        PayPal pages this endpoint. A single request returns at most page_size
+        rows, so the client follows total_pages until the window is exhausted.
+        """
         if self.settings.demo_mode:
             return {"ok": True, "transaction_details": [], "total_items": 0}
         now = datetime.now(timezone.utc)
         end = end_date or now
         start = start_date or (end - timedelta(days=30))
         url = f"{self.settings.paypal_base_url}/v1/reporting/transactions"
-        params = {
-            "start_date": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end_date": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "fields": "all",
-            "page_size": str(page_size),
-            "page": "1",
-        }
+        details: list[dict[str, Any]] = []
+        total_items = 0
+        page = 1
         try:
-            resp = self._request_with_retry("GET", url, params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "ok": True,
-                    "status_code": 200,
-                    "transaction_details": data.get("transaction_details", []),
-                    "total_items": data.get("total_items", 0),
-                    "raw": data,
+            while page <= 100:
+                params = {
+                    "start_date": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "end_date": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "fields": "all",
+                    "page_size": str(page_size),
+                    "page": str(page),
                 }
+                resp = self._request_with_retry("GET", url, params=params)
+                if resp.status_code != 200:
+                    return {
+                        "ok": False,
+                        "status_code": resp.status_code,
+                        "transaction_details": details,
+                        "total_items": total_items,
+                        "error": resp.text[:250],
+                    }
+                data = resp.json()
+                page_rows = data.get("transaction_details", [])
+                details.extend(page_rows)
+                total_items = int(data.get("total_items", len(details)) or len(details))
+                total_pages = int(data.get("total_pages", 1) or 1)
+                if page >= total_pages or not page_rows:
+                    break
+                page += 1
             return {
-                "ok": False,
-                "status_code": resp.status_code,
-                "transaction_details": [],
-                "error": resp.text[:250],
+                "ok": True,
+                "status_code": 200,
+                "transaction_details": details,
+                "total_items": total_items,
+                "raw": {"transaction_details": details, "total_items": total_items},
             }
         except Exception as exc:
             return {
                 "ok": False,
                 "status_code": 0,
-                "transaction_details": [],
+                "transaction_details": details,
+                "total_items": total_items,
                 "error": str(exc),
             }
 
@@ -966,6 +983,8 @@ class PayPalClient:
         buyer_message: str | None = None,
         resolution_strategy: str = "FULFILL_AND_EVIDENCE",
         replacement_order: PayPalOrderResult | None = None,
+        tracking_info: list[dict[str, Any]] | None = None,
+        refund_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Execute multi-channel dispute remediation on PayPal Sandbox (evidence, buyer message, claim/offer)."""
         if self.settings.demo_mode:
@@ -987,50 +1006,54 @@ class PayPalClient:
                 "strategy_used": resolution_strategy,
             }
 
-        dispute_api_status = "LOCAL_SIMULATED"
+        dispute_api_status = "NOT_SENT"
         evidence_type = self.select_evidence_type_for_reason(reason)
         notes_to_send = (buyer_message or evidence_text)[:1900]
         url = f"{self.settings.paypal_base_url}/v1/customer/disputes/{dispute_id}/provide-evidence"
-        try:
-            input_payload = json.dumps(
-                {
-                    "evidences": [
-                        {
-                            "evidence_type": evidence_type,
-                            "notes": notes_to_send,
-                        }
-                    ]
+
+        # PayPal validates evidence_info per type. Sending notes alone is
+        # rejected, so require the structured fields before calling.
+        evidence: dict[str, Any] = {
+            "evidence_type": evidence_type,
+            "notes": notes_to_send,
+        }
+        if evidence_type == "PROOF_OF_FULFILLMENT":
+            if not tracking_info:
+                return {
+                    "ok": False,
+                    "dispute_id": dispute_id,
+                    "dispute_api_status": "BLOCKED_MISSING_EVIDENCE",
+                    "error": "PROOF_OF_FULFILLMENT requires tracking_info entries with carrier_name and tracking_number.",
                 }
-            )
+            evidence["evidence_info"] = {"tracking_info": tracking_info}
+        elif evidence_type == "PROOF_OF_REFUND":
+            if not refund_ids:
+                return {
+                    "ok": False,
+                    "dispute_id": dispute_id,
+                    "dispute_api_status": "BLOCKED_MISSING_EVIDENCE",
+                    "error": "PROOF_OF_REFUND requires refund_ids.",
+                }
+            evidence["evidence_info"] = {"refund_ids": refund_ids}
+
+        ok = False
+        api_error = ""
+        try:
+            input_payload = json.dumps({"evidences": [evidence]})
             resp = self._request_with_retry(
                 "POST",
                 url,
                 files={"input": (None, input_payload, "application/json")},
             )
-            if resp.status_code not in (200, 201, 202) and evidence_type != "PROOF_OF_FULFILLMENT":
-                # Fallback if PayPal Sandbox state machine requires PROOF_OF_FULFILLMENT
-                fallback_payload = json.dumps(
-                    {
-                        "evidences": [
-                            {
-                                "evidence_type": "PROOF_OF_FULFILLMENT",
-                                "notes": notes_to_send,
-                            }
-                        ]
-                    }
-                )
-                resp = self._request_with_retry(
-                    "POST",
-                    url,
-                    files={"input": (None, fallback_payload, "application/json")},
-                )
-
             if resp.status_code in (200, 201, 202):
-                dispute_api_status = f"SANDBOX_ACCEPTED (HTTP {resp.status_code})"
+                ok = True
+                dispute_api_status = f"SUBMITTED (HTTP {resp.status_code})"
             else:
-                dispute_api_status = f"SANDBOX_CHECKED (HTTP {resp.status_code})"
+                dispute_api_status = f"FAILED (HTTP {resp.status_code})"
+                api_error = resp.text[:400]
         except Exception as exc:
             dispute_api_status = f"ERROR ({exc})"
+            api_error = str(exc)
 
         # Also dispatch a direct conversational reply if buyer_message is provided
         message_api_status = "SKIPPED"
@@ -1038,13 +1061,15 @@ class PayPalClient:
             msg_res = self.send_dispute_message(dispute_id, buyer_message)
             if msg_res.get("ok"):
                 message_api_status = f"MESSAGE_SENT (HTTP {msg_res.get('status_code')})"
-                if "SANDBOX_ACCEPTED" not in dispute_api_status:
-                    dispute_api_status = f"SANDBOX_ACCEPTED ({message_api_status})"
+                if not ok:
+                    dispute_api_status = f"{dispute_api_status} + {message_api_status}"
 
         if resolution_strategy == "ACCEPT_AND_REFUND":
             acc_res = self.accept_dispute_claim(dispute_id, note=notes_to_send)
-            if acc_res.get("ok"):
-                dispute_api_status = f"SANDBOX_ACCEPTED (CLAIM_REFUNDED HTTP {acc_res.get('status_code')})"
+            if acc_res.get("ok") and not ok:
+                dispute_api_status = (
+                    f"{dispute_api_status} + CLAIM_REFUNDED (HTTP {acc_res.get('status_code')})"
+                )
 
         if replacement_order is None:
             replacement_order = self.create_order(
@@ -1064,8 +1089,10 @@ class PayPalClient:
             pass
 
         return {
+            "ok": ok,
             "dispute_id": dispute_id,
             "dispute_api_status": dispute_api_status,
+            "error": api_error,
             "message_api_status": message_api_status,
             "strategy_used": resolution_strategy,
             "replacement_order": replacement_order,

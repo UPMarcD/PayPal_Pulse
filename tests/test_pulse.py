@@ -265,12 +265,16 @@ def test_dispute_evidence_multipart_and_invoice_send(monkeypatch: pytest.MonkeyP
         ),
     )
 
-    # Test dispute evidence
+    # Test dispute evidence. PayPal requires structured evidence_info, so the
+    # caller must supply tracking data for PROOF_OF_FULFILLMENT.
     res = client.submit_dispute_resolution(
         dispute_id="PP-D-12345",
         evidence_text="Telemetry proof of fulfillment",
+        reason="MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+        tracking_info=[{"carrier_name": "OTHER", "tracking_number": "TRK-1"}],
     )
-    assert "SANDBOX_ACCEPTED" in res["dispute_api_status"]
+    assert res["ok"] is True
+    assert "SUBMITTED" in res["dispute_api_status"]
     assert len(captured_requests) >= 1
     req = captured_requests[0]
     assert req["method"] == "POST"
@@ -280,6 +284,8 @@ def test_dispute_evidence_multipart_and_invoice_send(monkeypatch: pytest.MonkeyP
     input_file_tuple = req["kwargs"]["files"]["input"]
     assert input_file_tuple[2] == "application/json"
     assert "Telemetry proof" in input_file_tuple[1]
+    payload = json.loads(input_file_tuple[1])
+    assert payload["evidences"][0]["evidence_info"]["tracking_info"]
 
     # Test send_invoice
     send_res = client.send_invoice("INV2-XYZ-999")
