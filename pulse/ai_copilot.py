@@ -1122,7 +1122,7 @@ def draft_dispute_evidence(
     clean_country = _sanitize_untrusted(dispute.get("buyer_country", "US"))
     clean_buyer_msg = _sanitize_untrusted(plan["buyer_message"])
 
-    release_tag = str(dispute.get("release_version", "") or "")
+    release_tag = _sanitize_untrusted(str(dispute.get("release_version", "") or ""))
     commit_lines = [
         f"- {_sanitize_untrusted(line)[:160]}" for line in recent_commits(release_tag)
     ]
@@ -1136,8 +1136,8 @@ def draft_dispute_evidence(
         cfg_store = PulseStore(cfg.db_path, settings=cfg)
         deliveries = cfg_store.get_deliveries(release_tag or None)
         if deliveries:
-            delivery_block = "; ".join(
-                f"{d['delivery_id']} via {d['channel']}" for d in deliveries[:5]
+            delivery_block = _sanitize_untrusted(
+                "; ".join(f"{d['delivery_id']} via {d['channel']}" for d in deliveries[:5])
             )
     except Exception:
         pass
@@ -1196,7 +1196,7 @@ def draft_dispute_evidence(
 
     fallback = (
         f"FORMAL SELLER EVIDENCE & REMEDIATION — DISPUTE {dispute.get('dispute_id')} ({plan['problem_category']}):\n"
-        f"1. Problem Diagnosis: Verified {clean_reason} claim on {clean_sku} (Release {dispute.get('release_version')}, "
+        f"1. Problem Diagnosis: Verified {clean_reason} claim on {clean_sku} (Release {release_tag}, "
         f"Transaction {dispute.get('paypal_transaction_id')}). { _sanitize_untrusted(plan['root_cause']) }\n"
         f"2. Concrete Fix Executed: { _sanitize_untrusted(plan['fix_applied']) }\n"
         f"3. Direct Customer Message Dispatched to Buyer:\n"

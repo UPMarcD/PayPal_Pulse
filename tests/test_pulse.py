@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from textual.widgets import DataTable, Input, Static, TabbedContent
 from typer.testing import CliRunner
@@ -185,8 +186,8 @@ def test_concurrent_sqlite_writes(tmp_path: Path) -> None:
 def test_live_paypal_sandbox_and_groq_integration(tmp_path: Path) -> None:
     """Test real PayPal Sandbox OAuth2, Order & Invoice Creation, and Pulse AI API with .env credentials."""
     settings = get_settings()
-    assert settings.has_paypal_credentials is True
-    assert settings.has_groq_credentials is True
+    if not (settings.has_paypal_credentials and settings.has_groq_credentials):
+        pytest.skip("live PayPal Sandbox and Groq credentials are not configured")
 
     client = PayPalClient(settings)
     auth = client.authenticate(force_refresh=True)

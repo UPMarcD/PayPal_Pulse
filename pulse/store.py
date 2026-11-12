@@ -582,7 +582,8 @@ class PulseStore:
             conn.execute("DELETE FROM transactions")
             conn.execute("DELETE FROM disputes")
             conn.execute("DELETE FROM daily_metrics")
-            conn.execute("DELETE FROM meta WHERE key = 'last_seeded_at'")
+            conn.execute("DELETE FROM deliveries")
+            conn.execute("DELETE FROM meta WHERE key IN ('last_seeded_at', 'last_live_invoice_id')")
             conn.commit()
         if mark_clean:
             self.set_clean_mode(True)
@@ -1818,6 +1819,7 @@ class PulseStore:
             "total_paid": total_paid,
             "overall_conversion_pct": overall_conv,
             "mrr_usd": mrr_usd,
+            "mrr_is_estimate": True,
             "health_score": health_score,
             "health_rating": health_rating,
             "health_telemetry": health_telemetry,

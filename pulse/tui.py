@@ -842,18 +842,25 @@ class PayPalPulseTUI(App):
 
         disp_status = f"[bold #f85149]{open_disputes_count} Open[/bold #f85149]" if open_disputes_count > 0 else "[#3fb950]0 Open[/#3fb950]"
 
+        ledger_state = self.store.detect_state()
+        ledger_label = {
+            "fresh": "Empty",
+            "sample": "Sample",
+            "connected": "30d Synced",
+        }.get(ledger_state, "30d Synced")
+
         left_content = (
             f" {sb_badge}  [dim]│[/dim]  "
-            f"[dim]Ledger:[/dim] [bold #c9d1d9]30d Synced[/bold #c9d1d9]"
+            f"[dim]Ledger:[/dim] [bold #c9d1d9]{ledger_label}[/bold #c9d1d9]"
         )
 
-        rels = self.store.get_releases(include_git_tags=True)
+        rels = [] if ledger_state == "fresh" else self.store.get_releases(include_git_tags=True)
         if len(rels) >= 2:
             rel_range_str = f"{rels[0]['version']}..{rels[-1]['version']}"
         elif len(rels) == 1:
             rel_range_str = str(rels[0]["version"])
         else:
-            rel_range_str = "v1.1.0..v1.2.1"
+            rel_range_str = "none"
 
         if is_wide:
             right_content = (
@@ -924,6 +931,11 @@ class PayPalPulseTUI(App):
             self.query_one("#dash-sparkline", Static).update(
                 "[bold #8b949e]14-Day True Net Velocity:[/bold #8b949e] [dim]No data[/dim]"
             )
+            for table_id in ("#currency-table", "#timeline-table", "#disputes-table"):
+                try:
+                    self.query_one(table_id, DataTable).clear()
+                except Exception:
+                    pass
             self._update_auth_banner(self._auth_result, open_disputes_count=0)
             return
 

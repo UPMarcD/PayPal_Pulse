@@ -497,8 +497,8 @@ def test_cli_capture_command_demo(tmp_path):
     assert any(t["paypal_id"] == "UNSEEN-ORD-1" and t["status"] == "COMPLETED" for t in txs)
 
 
-def test_should_auto_seed_fail_safe_defaults(tmp_path, monkeypatch):
-    """Verify that should_auto_seed returns False when live mode is configured."""
+def test_should_auto_seed_never_seeds_a_real_ledger(tmp_path, monkeypatch):
+    """A non-demo ledger stays empty in every mode, which is the fail-safe default."""
     db_file = tmp_path / "pulse.db"
     monkeypatch.setenv("PAYPAL_MODE", "live")
     store = PulseStore(db_path=db_file)

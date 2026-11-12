@@ -156,3 +156,33 @@ async def test_tui_kpi_cards_formatting_and_mrr(tmp_path, monkeypatch: pytest.Mo
         assert "Disputes:" in health_text
 
 
+
+
+@pytest.mark.asyncio
+async def test_tui_fresh_state_clears_tables_and_release_range(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reset ledger must not keep stale rows or a hardcoded release range."""
+    from textual.widgets import DataTable
+
+    monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
+    app = PayPalPulseTUI()
+    app.store.seed_telemetry()
+
+    async with app.run_test(size=(120, 35)) as pilot:
+        await pilot.pause()
+        app.store.reset(mark_clean=True)
+        app._populate_all()
+        await pilot.pause()
+
+        for table_id in ("#currency-table", "#timeline-table", "#disputes-table"):
+            assert app.query_one(table_id, DataTable).row_count == 0
+
+        import io
+
+        from rich.console import Console
+
+        buffer = io.StringIO()
+        console = Console(file=buffer, record=True, width=200)
+        console.print(app.query_one("#global-context-bar", Static).content)
+        bar_text = console.export_text().encode("ascii", "ignore").decode("ascii")
+        assert "v1.1.0..v1.2.1" not in bar_text
+        assert "none" in bar_text
