@@ -36,3 +36,13 @@ scripts/
 *.mp3
 *.wav
 
+# Demo video build output (rendered frames, encodes, captures)
+video/frames/
+video/preview/
+video/out/
+video/assets/steps*/
+video/assets/*.ansi
+video/assets/*.txt
+video/assets/*.html
+video/assets/data.js
+
