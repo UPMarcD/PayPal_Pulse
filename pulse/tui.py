@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import webbrowser
 from typing import Any
 
@@ -885,6 +886,27 @@ class PayPalPulseTUI(App):
             except Exception:
                 pass
 
+    def _post_ui(self, callback: Any, *args: Any, **kwargs: Any) -> None:
+        """Run a UI callback safely from a worker thread.
+
+        Textual's call_from_thread raises once the app has stopped, and the
+        coroutine it builds is then garbage collected without ever being
+        awaited. Callers already on the app thread run inline instead.
+        """
+        if threading.current_thread() is threading.main_thread():
+            callback(*args, **kwargs)
+            return
+        # call_from_thread builds a coroutine before it checks the loop. If the
+        # app is shutting down that coroutine is never awaited, so check first.
+        loop = getattr(self, "_loop", None)
+        if loop is None or loop.is_closed() or not self.is_running:
+            return
+        try:
+            self.call_from_thread(callback, *args, **kwargs)
+        except RuntimeError:
+            # The app stopped between the check and the call; drop the update.
+            pass
+
     @work(thread=True, exclusive=True, group="auth-check")
     def _run_auth_check_worker(self, force_refresh: bool = False) -> None:
         auth_res = self.pp_client.authenticate(force_refresh=force_refresh)
@@ -896,8 +918,8 @@ class PayPalPulseTUI(App):
                     self.store.sync_external_disputes(live_res["items"])
             except Exception:
                 pass
-        self.call_from_thread(self._update_auth_banner, auth_res)
-        self.call_from_thread(self._populate_all)
+        self._post_ui(self._update_auth_banner, auth_res)
+        self._post_ui(self._populate_all)
 
     def _populate_all(self) -> None:
         if not self.is_running or not self.query("#dash-dispute-alert"):
@@ -1115,7 +1137,7 @@ class PayPalPulseTUI(App):
                     self.store.sync_external_transactions(tx_res["transaction_details"])
             except Exception:
                 pass
-        self.call_from_thread(self._populate_all)
+        self._post_ui(self._populate_all)
 
     def action_switch_tab(self, tab_id: str) -> None:
         self.query_one("#main-tabs", TabbedContent).active = tab_id
@@ -1162,10 +1184,10 @@ class PayPalPulseTUI(App):
             )
             if res.success:
                 self.store.record_live_order(res, rel_ver, "US", platform_sku=sku_str)
-            self.call_from_thread(self._finish_create_order_ui, res)
+            self._post_ui(self._finish_create_order_ui, res)
         except Exception as exc:
-            self.call_from_thread(self._finish_create_order_error, str(exc))
-            self.call_from_thread(self._finish_create_order_error, str(exc))
+            self._post_ui(self._finish_create_order_error, str(exc))
+            self._post_ui(self._finish_create_order_error, str(exc))
 
     def _finish_create_order_ui(self, res: Any) -> None:
         log = self.query_one("#order-log", RichLog)
@@ -1227,7 +1249,7 @@ class PayPalPulseTUI(App):
                     continue
                 if chk.status == "COMPLETED":
                     self.store.update_order_status(paypal_id=order_id, status="COMPLETED")
-                    self.call_from_thread(self._finish_auto_capture_ui, chk)
+                    self._post_ui(self._finish_auto_capture_ui, chk)
                     break
                 if chk.status == "APPROVED":
                     cap_res = self.pp_client.capture_order(order_id)
@@ -1238,7 +1260,7 @@ class PayPalPulseTUI(App):
                             amount=cap_res.amount,
                             currency=cap_res.currency,
                         )
-                        self.call_from_thread(self._finish_auto_capture_ui, cap_res)
+                        self._post_ui(self._finish_auto_capture_ui, cap_res)
                         break
             except Exception:
                 pass
@@ -1281,9 +1303,9 @@ class PayPalPulseTUI(App):
                     amount=res.amount,
                     currency=res.currency,
                 )
-            self.call_from_thread(self._finish_capture_order_ui, res)
+            self._post_ui(self._finish_capture_order_ui, res)
         except Exception as exc:
-            self.call_from_thread(self._finish_capture_order_error, str(exc))
+            self._post_ui(self._finish_capture_order_error, str(exc))
 
     def _finish_capture_order_ui(self, res: Any) -> None:
         log = self.query_one("#order-log", RichLog)
@@ -1489,7 +1511,7 @@ class PayPalPulseTUI(App):
                 order_id,
                 new_status=updated_status,
             )
-            self.call_from_thread(
+            self._post_ui(
                 self._finish_resolve_dispute_ui,
                 dispute_id,
                 order_id,
@@ -1498,7 +1520,7 @@ class PayPalPulseTUI(App):
                 updated_status,
             )
         except Exception as exc:
-            self.call_from_thread(self._finish_resolve_dispute_error, str(exc))
+            self._post_ui(self._finish_resolve_dispute_error, str(exc))
 
     def _finish_resolve_dispute_ui(
         self,
@@ -1577,9 +1599,9 @@ class PayPalPulseTUI(App):
         try:
             live_res = self.pp_client.get_disputes()
             added = self.store.sync_external_disputes(live_res.get("items", []))
-            self.call_from_thread(self._finish_sync_disputes_ui, live_res, added)
+            self._post_ui(self._finish_sync_disputes_ui, live_res, added)
         except Exception as exc:
-            self.call_from_thread(self._finish_sync_disputes_error, str(exc))
+            self._post_ui(self._finish_sync_disputes_error, str(exc))
 
     def _finish_sync_disputes_ui(self, live_res: dict[str, Any], added: int) -> None:
         log = self.query_one("#dispute-log", RichLog)
@@ -1649,9 +1671,9 @@ class PayPalPulseTUI(App):
                 paypal_client=self.pp_client,
                 settings=self.settings,
             )
-            self.call_from_thread(self._finish_ask_copilot_ui, res, turn_id)
+            self._post_ui(self._finish_ask_copilot_ui, res, turn_id)
         except Exception as exc:
-            self.call_from_thread(self._finish_ask_copilot_error, str(exc), turn_id)
+            self._post_ui(self._finish_ask_copilot_error, str(exc), turn_id)
 
     def _finish_ask_copilot_ui(self, res: CopilotAnswer, turn_id: int) -> None:
         chat_scroll = self.query_one("#copilot-chat-scroll", VerticalScroll)
@@ -1768,7 +1790,7 @@ class PayPalPulseTUI(App):
         )
         test_client = PayPalClient(temp_settings)
         auth_res = test_client.authenticate(force_refresh=True)
-        self.call_from_thread(self._finish_paypal_ping, auth_res)
+        self._post_ui(self._finish_paypal_ping, auth_res)
 
     def _finish_paypal_ping(self, auth_res: PayPalAuthResult) -> None:
         status_box = self.query_one("#settings-paypal-status", Static)
@@ -1813,7 +1835,7 @@ class PayPalPulseTUI(App):
             kwargs["xai_api_key"] = key
         temp_settings = PulseSettings(**kwargs)
         res = verify_groq_connection(temp_settings, timeout=10.0)
-        self.call_from_thread(self._finish_ai_ping, res, provider)
+        self._post_ui(self._finish_ai_ping, res, provider)
 
     def _finish_ai_ping(self, res: Any, provider: str) -> None:
         status_box = self.query_one("#settings-ai-status", Static)

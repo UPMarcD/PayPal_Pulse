@@ -664,32 +664,40 @@ def cmd_pulse(
     console.print(Columns([kpi_left, kpi_right], equal=True, expand=True))
 
     # 4. Multi-Currency Balances & True Net Breakdown Table
+    # Below 100 columns the two margin percentages are dropped so every
+    # remaining figure stays readable instead of being squeezed to blank.
+    compact_cur = console.width < 100
     cur_table = Table(
         title="Multi-Currency Ledger Balances & True Net Take-Home",
         box=box.SIMPLE_HEAVY,
         expand=True,
     )
     cur_table.add_column("Currency", style="bold cyan")
-    cur_table.add_column("Transactions", justify="right")
-    cur_table.add_column("Gross Volume", justify="right", style="white")
-    cur_table.add_column("PayPal Fees", justify="right", style="red")
-    cur_table.add_column("Fee Drag %", justify="right", style="yellow")
-    cur_table.add_column("True Net (Native)", justify="right", style="bold green")
-    cur_table.add_column("Net Margin %", justify="right", style="cyan")
-    cur_table.add_column("USD Equiv Net", justify="right", style="bold green")
+    cur_table.add_column("Txns", justify="right")
+    cur_table.add_column("Gross", justify="right", style="white")
+    cur_table.add_column("Fees", justify="right", style="red")
+    if not compact_cur:
+        cur_table.add_column("Fee Drag %", justify="right", style="yellow")
+    cur_table.add_column("Net (Native)", justify="right", style="bold green")
+    if not compact_cur:
+        cur_table.add_column("Net Margin %", justify="right", style="cyan")
+    cur_table.add_column("USD Net", justify="right", style="bold green")
 
     for c in summary["currencies"]:
         sym = CURRENCY_SYMBOLS.get(c["currency"], f"{c['currency']} ")
-        cur_table.add_row(
+        row = [
             c["currency"],
             str(c["tx_count"]),
             f"{sym}{c['gross']:,.2f}",
             f"-{sym}{c['fees']:,.2f}",
-            f"{c['fee_pct']}%",
-            f"{sym}{c['net']:,.2f}",
-            f"{c['net_margin_pct']}%",
-            f"${c['usd_net']:,.2f}",
-        )
+        ]
+        if not compact_cur:
+            row.append(f"{c['fee_pct']}%")
+        row.append(f"{sym}{c['net']:,.2f}")
+        if not compact_cur:
+            row.append(f"{c['net_margin_pct']}%")
+        row.append(f"${c['usd_net']:,.2f}")
+        cur_table.add_row(*row)
     console.print(cur_table)
 
     # 5. 14-Day ASCII Revenue & Customer Acquisition Sparkline / Bar Chart
@@ -699,30 +707,33 @@ def cmd_pulse(
     max_net = max(net_series) if net_series else 1.0
 
     chart_table = Table(
-        title=f"14-Day Revenue & Customer Acquisition Velocity  |  Net Sparkline: {_sparkline(net_series)}  |  Customers: {_sparkline(inst_series)}",
+        title=(
+            f"14-Day Revenue & Install Velocity  |  Net Sparkline: {_sparkline(net_series)}  |  Installs: {_sparkline(inst_series)}"
+            if console.width >= 100
+            else f"14-Day Net Revenue  |  {_sparkline(net_series)}"
+        ),
         box=box.ROUNDED,
         expand=True,
     )
+    narrow_chart = console.width < 90
     chart_table.add_column("Date", style="dim", no_wrap=True)
     chart_table.add_column("Release", style="cyan", no_wrap=True)
-    chart_table.add_column("Customers", justify="right")
+    if not narrow_chart:
+        chart_table.add_column("Installs", justify="right")
     chart_table.add_column("Orders", justify="right")
     chart_table.add_column("True Net (USD)", justify="right", style="bold green")
-    chart_table.add_column("ASCII Net Revenue Bar", style="green")
+    chart_table.add_column("Net Bar" if narrow_chart else "ASCII Net Revenue Bar", style="green")
 
     for d in daily_14:
         bar_len = max(1, int((float(d["net_usd"]) / max_net) * 24))
         bar_str = "█" * bar_len
         if int(d["disputes"]) > 0:
             bar_str += f" [bold #f85149][!] {d['disputes']} dispute[/bold #f85149]"
-        chart_table.add_row(
-            d["day_date"][5:],
-            d["release_version"],
-            str(d["installs"]),
-            str(d["paid_orders"]),
-            f"${d['net_usd']:,.2f}",
-            bar_str,
-        )
+        row = [d["day_date"][5:], d["release_version"]]
+        if not narrow_chart:
+            row.append(str(d["installs"]))
+        row.extend([str(d["paid_orders"]), f"${d['net_usd']:,.2f}", bar_str])
+        chart_table.add_row(*row)
     console.print(chart_table)
 
     # 6. Recent Live PayPal Sandbox Orders
@@ -943,22 +954,30 @@ def cmd_timeline(
         )
     )
 
+    # Below 100 columns the install, conversion, gross, and refund columns are
+    # dropped so the remaining figures stay readable at the 80-column minimum.
+    compact_tl = console.width < 100
+    narrow_tl = console.width < 90
     tl_table = Table(
         title="Git Release Telemetry vs. PayPal Conversion & Dispute Surge",
         box=box.ROUNDED,
         expand=True,
     )
-    tl_table.add_column("Release Tag", style="bold cyan", no_wrap=True)
+    tl_table.add_column("Release" if compact_tl else "Release Tag", style="bold cyan", no_wrap=True)
     tl_table.add_column("Commit", style="dim", no_wrap=True)
-    tl_table.add_column("Date", no_wrap=True)
-    tl_table.add_column("Installs", justify="right")
-    tl_table.add_column("Paid Orders", justify="right")
-    tl_table.add_column("Conv %", justify="right", style="bold yellow")
-    tl_table.add_column("Gross (USD)", justify="right")
-    tl_table.add_column("True Net (USD)", justify="right", style="bold green")
-    tl_table.add_column("Refunds", justify="right")
-    tl_table.add_column("Disputes", justify="right")
-    tl_table.add_column("Telemetry Status", no_wrap=True)
+    if not narrow_tl:
+        tl_table.add_column("Date", no_wrap=True)
+    if not compact_tl:
+        tl_table.add_column("Installs", justify="right")
+    tl_table.add_column("Orders" if compact_tl else "Paid Orders", justify="right")
+    if not compact_tl:
+        tl_table.add_column("Conv %", justify="right", style="bold yellow")
+        tl_table.add_column("Gross (USD)", justify="right")
+    tl_table.add_column("Net" if compact_tl else "True Net (USD)", justify="right", style="bold green")
+    if not compact_tl:
+        tl_table.add_column("Refunds", justify="right")
+    tl_table.add_column("Disp" if compact_tl else "Disputes", justify="right")
+    tl_table.add_column("Status" if compact_tl else "Telemetry Status", no_wrap=True)
 
     open_disputes_list = store.get_disputes(status_filter="OPEN")
     disp_country_by_rel: dict[str, str] = {}
@@ -982,19 +1001,21 @@ def cmd_timeline(
         cust_val = r.get("customers", r.get("installs", 0))
         order_val = r.get("paid_orders", r.get("paid_conversions", 0))
         conv_val = f"{r['conversion_rate']:.2f}%" if int(cust_val) > 0 else "n/a"
-        tl_table.add_row(
-            r["version"],
-            r["git_commit"],
-            r["released_at"],
-            f"{cust_val:,}",
-            f"{order_val:,}",
-            conv_val,
-            f"${r['gross_usd']:,.2f}",
-            f"${r['net_usd']:,.2f}",
-            str(r["refund_count"]),
-            disp_str,
-            f"[{badge_style}]{r['status_badge']}[/{badge_style}]",
-        )
+        row = [r["version"], r["git_commit"]]
+        if not narrow_tl:
+            row.append(r["released_at"])
+        if not compact_tl:
+            row.append(f"{cust_val:,}")
+        row.append(f"{order_val:,}")
+        if not compact_tl:
+            row.append(conv_val)
+            row.append(f"${r['gross_usd']:,.2f}")
+        row.append(f"${r['net_usd']:,.2f}")
+        if not compact_tl:
+            row.append(str(r["refund_count"]))
+        row.append(disp_str)
+        row.append(f"[{badge_style}]{r['status_badge']}[/{badge_style}]")
+        tl_table.add_row(*row)
 
     console.print(tl_table)
 
