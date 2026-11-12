@@ -105,7 +105,8 @@ def test_dynamic_release_upsert_in_store(tmp_path: Path) -> None:
     assert v250_rel["paid_conversions"] == 1
     assert v250_rel["gross_usd"] == 99.00
     assert v250_rel["net_usd"] > 90.00
-    assert v250_rel["conversion_rate"] > 0.0
+    assert v250_rel["installs"] == 0
+    assert v250_rel["conversion_rate"] == 0.0
 
     # Record second order on the same release
     order_res_2 = PayPalOrderResult(
@@ -154,7 +155,8 @@ def test_git_tag_telemetry_aggregation(tmp_path: Path, monkeypatch) -> None:
     v010_after = next(r for r in rels_after if r["version"] == "v0.1.0")
     assert v010_after["gross_usd"] == 100.00
     assert v010_after["paid_conversions"] == 1
-    assert v010_after["conversion_rate"] == 100.0
+    assert v010_after["installs"] == 0
+    assert v010_after["conversion_rate"] == 0.0
     assert v010_after["status_badge"] == "ACTIVE"
 
 
@@ -270,7 +272,8 @@ def test_clean_board_multi_trigger_dispute_and_git_sha_stresstest(tmp_path: Path
     assert rel_map["v0.1.0"]["git_commit"] == sha_v010
 
     assert rel_map["v0.2.0"]["paid_conversions"] == 2
-    assert rel_map["v0.2.0"]["conversion_rate"] == 100.0
+    assert rel_map["v0.2.0"]["installs"] == 0
+    assert rel_map["v0.2.0"]["conversion_rate"] == 0.0
     assert rel_map["v0.2.0"]["gross_usd"] == 98.00
     assert rel_map["v0.2.0"]["dispute_count"] == 1
     assert rel_map["v0.2.0"]["status_badge"] == "DISPUTE RISK"

@@ -500,9 +500,9 @@ MODEL CONTEXT PROTOCOL (MCP) INTEGRATION:
 - Total Gross Revenue (USD Equiv): ${summary.get('total_gross_usd', 0.0):,.2f}
 - Total PayPal Fee Drag (USD Equiv): ${summary.get('total_fees_usd', 0.0):,.2f} ({summary.get('fee_drag_pct', 0.0)}%)
 - True Net Take-Home (USD Equiv): ${summary.get('total_net_usd', 0.0):,.2f} ({summary.get('net_margin_pct', 0.0)}% net margin)
-- Total Customers: {summary.get('total_customers', summary.get('total_installs', 0)):,} | Active Customers: {summary.get('active_customers', summary.get('active_users', 0)):,}
+- Paid Orders: {summary.get('total_orders', summary.get('total_paid', 0)):,} | Releases: {len(summary.get('releases', [])):,}
 - Paid Orders: {summary.get('total_orders', summary.get('total_paid', 0)):,} ({summary.get('overall_conversion_pct', 0.0)}% order conversion rate)
-- Monthly Recurring Revenue (MRR): ${summary.get('mrr_usd', 0.0):,.2f}
+- 30-Day Net Run-Rate: ${summary.get('net_run_rate_30d_usd', 0.0):,.2f} (Pulse stores no subscription data, so this is trailing net revenue, not MRR)
 - Merchant Health Score: {summary.get('health_score', 0)}/100
 - Open Disputes: {summary.get('open_disputes_count', 0)} (Total Disputes: {summary.get('total_disputes_count', 0)})
 - Latest PayPal Sandbox Draft Invoice ID: {summary.get('last_live_invoice_id', 'None')}

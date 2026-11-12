@@ -633,7 +633,7 @@ def cmd_pulse(
             )
         )
 
-    # 3. KPI Cards (True Net Take-Home + Customer & Sales Metrics)
+    # 3. KPI Cards (True Net Take-Home + Orders & Revenue)
     kpi_left = Panel(
         f"[bold white]Gross Volume (30d):[/bold white]   [bold]${summary['total_gross_usd']:,.2f} USD[/bold]\n"
         f"[bold white]PayPal Fee Drag:[/bold white]      [red]-${summary['total_fees_usd']:,.2f} USD ({summary['fee_drag_pct']}%)[/red]\n"
@@ -644,20 +644,19 @@ def cmd_pulse(
         expand=True,
     )
 
-    cust_count = summary.get("total_customers", summary.get("total_installs", 0))
-    active_cust = summary.get("active_customers", summary.get("active_users", 0))
     paid_orders = summary.get("total_orders", summary.get("total_paid", 0))
+    release_count = len(summary.get("releases", []))
     telemetry = summary.get("health_telemetry", {})
     score_val = summary["health_score"]
     rating_str = summary.get("health_rating", "HEALTHY")
     rating_color = telemetry.get("rating_color", "bold cyan")
 
     kpi_right = Panel(
-        f"[bold white]Active Customers:[/bold white]   [bold]{active_cust:,}[/bold] (Total: {cust_count:,})\n"
-        f"[bold white]Paid Orders:[/bold white]        [bold]{paid_orders:,}[/bold] ([bold cyan]{summary['overall_conversion_pct']}%[/bold cyan] Paid Conv %)\n"
-        f"[bold white]Recurring MRR:[/bold white]      [bold green]${summary['mrr_usd']:,.2f} / mo[/bold green]\n"
+        f"[bold white]Paid Orders:[/bold white]         [bold]{paid_orders:,}[/bold]\n"
+        f"[bold white]Releases Tracked:[/bold white]    [bold]{release_count:,}[/bold]\n"
+        f"[bold white]30-Day Net Run-Rate:[/bold white] [bold green]${summary['net_run_rate_30d_usd']:,.2f}[/bold green]\n"
         f"[bold white]Merchant Health Index:[/bold white] [{rating_color}]{score_val} / 100 [{rating_str}][/{rating_color}]",
-        title="[bold #00a8ea]Customer & Sales Metrics[/bold #00a8ea]",
+        title="[bold #00a8ea]Orders & Revenue[/bold #00a8ea]",
         border_style="#00a8ea",
         expand=True,
     )
@@ -951,7 +950,7 @@ def cmd_timeline(
     tl_table.add_column("Release Tag", style="bold cyan", no_wrap=True)
     tl_table.add_column("Commit", style="dim", no_wrap=True)
     tl_table.add_column("Date", no_wrap=True)
-    tl_table.add_column("Customers", justify="right")
+    tl_table.add_column("Installs", justify="right")
     tl_table.add_column("Paid Orders", justify="right")
     tl_table.add_column("Conv %", justify="right", style="bold yellow")
     tl_table.add_column("Gross (USD)", justify="right")
@@ -981,13 +980,14 @@ def cmd_timeline(
         )
         cust_val = r.get("customers", r.get("installs", 0))
         order_val = r.get("paid_orders", r.get("paid_conversions", 0))
+        conv_val = f"{r['conversion_rate']:.2f}%" if int(cust_val) > 0 else "n/a"
         tl_table.add_row(
             r["version"],
             r["git_commit"],
             r["released_at"],
             f"{cust_val:,}",
             f"{order_val:,}",
-            f"{r['conversion_rate']:.2f}%",
+            conv_val,
             f"${r['gross_usd']:,.2f}",
             f"${r['net_usd']:,.2f}",
             str(r["refund_count"]),

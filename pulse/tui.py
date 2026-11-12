@@ -921,7 +921,7 @@ class PayPalPulseTUI(App):
                 "[dim]Record an order to start the dashboard.[/dim]"
             )
             self.query_one("#kpi-watch", Static).update(
-                "[bold #8b949e]CUSTOMERS & SALES[/bold #8b949e]\n"
+                "[bold #8b949e]ORDERS & SALES[/bold #8b949e]\n"
                 "[dim]Nothing recorded yet.[/dim]"
             )
             self.query_one("#kpi-health", Static).update(
@@ -962,17 +962,16 @@ class PayPalPulseTUI(App):
             f"[dim]Gross:[/dim] [bold #f0f6fc]${summary['total_gross_usd']:,.0f}[/bold #f0f6fc]  [dim]Fees:[/dim] [bold #8b949e]-${summary['total_fees_usd']:,.0f} ({summary['fee_drag_pct']}%)[/bold #8b949e]"
         )
 
-        cust_count = summary.get("total_customers", summary.get("total_installs", 0))
-        active_cust = summary.get("active_customers", summary.get("active_users", 0))
         paid_orders = summary.get("total_orders", summary.get("total_paid", 0))
-        mrr_val = summary.get("mrr_usd", 0.0)
+        release_count = len(summary.get("releases", []))
+        run_rate = summary.get("net_run_rate_30d_usd", 0.0)
         conv_pct = summary.get("overall_conversion_pct", 0.0)
-        mrr_fmt = f"${mrr_val:,.0f}/mo" if mrr_val < 100_000 else f"${mrr_val/1000:,.1f}k/mo"
+        conv_str = f"{conv_pct:.1f}%" if summary.get("total_installs", 0) > 0 else "n/a"
 
         self.query_one("#kpi-watch", Static).update(
-            f"[bold #8b949e]CUSTOMERS & SALES[/bold #8b949e]\n"
-            f"[bold #f0f6fc]{cust_count:,}[/bold #f0f6fc] [dim]Users ({active_cust:,} active)[/dim]\n"
-            f"[dim]Orders:[/dim] [bold #f0f6fc]{paid_orders:,}[/bold #f0f6fc] [dim]({conv_pct:.1f}%)[/dim] [dim]MRR:[/dim] [bold #58a6ff]{mrr_fmt}[/bold #58a6ff]"
+            f"[bold #8b949e]ORDERS & SALES[/bold #8b949e]\n"
+            f"[bold #f0f6fc]{paid_orders:,}[/bold #f0f6fc] [dim]paid orders ({release_count:,} releases)[/dim]\n"
+            f"[dim]Conv:[/dim] [bold #f0f6fc]{conv_str}[/bold #f0f6fc] [dim]Run-rate:[/dim] [bold #58a6ff]${run_rate:,.0f}[/bold #58a6ff]"
         )
 
         telemetry = summary.get("health_telemetry", {})

@@ -132,8 +132,8 @@ async def test_tui_disputes_browser_button_and_row_select(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_tui_kpi_cards_formatting_and_mrr(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify that KPI cards format cleanly and display MRR properly on standard viewports."""
+async def test_tui_kpi_cards_formatting_and_run_rate(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that KPI cards format cleanly and display the run-rate on standard viewports."""
     monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
     app = PayPalPulseTUI()
     app.store.seed_telemetry()
@@ -141,9 +141,8 @@ async def test_tui_kpi_cards_formatting_and_mrr(tmp_path, monkeypatch: pytest.Mo
         await pilot.pause()
         kpi_watch = app.query_one("#kpi-watch", Static)
         text = str(kpi_watch.render())
-        assert "MRR:" in text
-        assert "/mo" in text
-        assert "CUSTOMERS & SALES" in text
+        assert "Run-rate:" in text
+        assert "ORDERS & SALES" in text
 
         kpi_net = app.query_one("#kpi-net", Static)
         net_text = str(kpi_net.render())

@@ -730,7 +730,7 @@ class PulseStore:
                             version, title, released_at, git_commit, installs, active_users,
                             trial_starts, paid_conversions, conversion_rate, gross_usd,
                             fees_usd, net_usd, refund_count, dispute_count, status_badge, ai_diagnostic
-                        ) VALUES (?, ?, ?, ?, 1, 1, 1, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 'ACTIVE', 'Dynamic release created via live PayPal transaction.')
+                        ) VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 'ACTIVE', 'Dynamic release created via live PayPal transaction.')
                         """,
                         (effective_release, rel_title, rel_date, commit_sha),
                     )
@@ -740,16 +740,10 @@ class PulseStore:
                     """
                     UPDATE releases
                     SET paid_conversions = paid_conversions + 1,
-                        installs = CASE WHEN installs <= paid_conversions THEN paid_conversions + 1 ELSE installs END,
-                        active_users = CASE WHEN active_users <= paid_conversions THEN paid_conversions + 1 ELSE active_users END,
-                        conversion_rate = ROUND(
-                            ((paid_conversions + 1) * 100.0) / CASE
-                                WHEN installs <= paid_conversions THEN paid_conversions + 1
-                                WHEN installs > 0 THEN installs
-                                ELSE 1
-                            END,
-                            2
-                        ),
+                        conversion_rate = CASE
+                            WHEN installs > 0 THEN ROUND(((paid_conversions + 1) * 100.0) / installs, 2)
+                            ELSE 0.0
+                        END,
                         gross_usd = ROUND(gross_usd + ?, 2),
                         fees_usd = ROUND(fees_usd + ?, 2),
                         net_usd = ROUND(net_usd + ?, 2)
@@ -768,7 +762,6 @@ class PulseStore:
                         """
                         UPDATE daily_metrics
                         SET paid_orders = paid_orders + 1,
-                            installs = CASE WHEN installs <= paid_orders THEN paid_orders + 1 ELSE installs END,
                             gross_usd = ROUND(gross_usd + ?, 2),
                             fees_usd = ROUND(fees_usd + ?, 2),
                             net_usd = ROUND(net_usd + ?, 2),
@@ -1778,8 +1771,9 @@ class PulseStore:
             else 0.0
         )
 
-        # MRR (Monthly Recurring Revenue from recurring software subscriptions + license seats)
-        mrr_usd = round(total_net_usd * 0.68, 2)
+        # 30-day net run-rate. Pulse stores no subscription or interval data, so
+        # this is the trailing net sum, not a recurring-revenue figure.
+        net_run_rate_30d_usd = round(total_net_usd, 2)
 
         state = self.detect_state()
         health_telemetry = self.compute_merchant_health(
@@ -1818,8 +1812,7 @@ class PulseStore:
             "total_orders": total_paid,
             "total_paid": total_paid,
             "overall_conversion_pct": overall_conv,
-            "mrr_usd": mrr_usd,
-            "mrr_is_estimate": True,
+            "net_run_rate_30d_usd": net_run_rate_30d_usd,
             "health_score": health_score,
             "health_rating": health_rating,
             "health_telemetry": health_telemetry,
@@ -2004,7 +1997,7 @@ class PulseStore:
                         version, title, released_at, git_commit, installs, active_users,
                         trial_starts, paid_conversions, conversion_rate, gross_usd,
                         fees_usd, net_usd, refund_count, dispute_count, status_badge, ai_diagnostic
-                    ) VALUES (?, ?, ?, ?, 1, 1, 1, 0, 0.0, 0.0, 0.0, 0.0, 0, 1, 'DISPUTE ALERT (ACTIVE)', ?)
+                    ) VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0, 1, 'DISPUTE ALERT (ACTIVE)', ?)
                     """,
                     (
                         eff_rel,
