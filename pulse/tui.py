@@ -906,6 +906,27 @@ class PayPalPulseTUI(App):
             else:
                 self._run_auth_check_worker(force_refresh=False)
 
+        if summary.get("state") == "fresh":
+            self.query_one("#dash-dispute-alert", Static).display = False
+            self.query_one("#kpi-net", Static).update(
+                "[bold #8b949e]TRUE NET TAKE-HOME[/bold #8b949e]\n"
+                "[bold #f0f6fc]No ledger data yet[/bold #f0f6fc]\n"
+                "[dim]Record an order to start the dashboard.[/dim]"
+            )
+            self.query_one("#kpi-watch", Static).update(
+                "[bold #8b949e]CUSTOMERS & SALES[/bold #8b949e]\n"
+                "[dim]Nothing recorded yet.[/dim]"
+            )
+            self.query_one("#kpi-health", Static).update(
+                "[bold #8b949e]MERCHANT HEALTH[/bold #8b949e]\n"
+                "[dim]Awaiting first order.[/dim]"
+            )
+            self.query_one("#dash-sparkline", Static).update(
+                "[bold #8b949e]14-Day True Net Velocity:[/bold #8b949e] [dim]No data[/dim]"
+            )
+            self._update_auth_banner(self._auth_result, open_disputes_count=0)
+            return
+
         open_cnt = summary["open_disputes_count"]
         self._update_auth_banner(self._auth_result, open_disputes_count=open_cnt)
 

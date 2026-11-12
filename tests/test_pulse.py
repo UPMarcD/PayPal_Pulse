@@ -284,8 +284,15 @@ def test_dispute_evidence_multipart_and_invoice_send(monkeypatch: pytest.MonkeyP
     assert "payerView/details/INV2-XYZ-999" in send_res["payer_view_url"]
 
 
-def test_cli_commands_end_to_end() -> None:
+def test_cli_commands_end_to_end(tmp_path: Path, monkeypatch) -> None:
     """Run all CLI commands through Typer CliRunner to verify zero exit errors and Pulse branding."""
+    monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
+    from pulse.config import get_settings as _get_settings
+    from pulse.store import PulseStore as _PulseStore
+
+    _settings = _get_settings()
+    _PulseStore(_settings.db_path, settings=_settings).seed_telemetry()
+
     r_auth = runner.invoke(app, ["auth", "--cached"])
     assert r_auth.exit_code == 0
     assert "AUTHENTICATED" in r_auth.stdout
@@ -445,7 +452,7 @@ def test_store_clean_mode_and_reset_command(tmp_path: Path, monkeypatch) -> None
     store = PulseStore(db_path=db_file)
     assert store.is_seeded() is False
     assert store.has_live_data() is False
-    assert store.should_auto_seed() is True
+    assert store.should_auto_seed() is False
 
     # Seed the store
     store.seed_telemetry()
@@ -468,7 +475,7 @@ def test_store_clean_mode_and_reset_command(tmp_path: Path, monkeypatch) -> None
 
     # Recording a live order disables auto-seeding even without clean_mode
     store.set_clean_mode(False)
-    assert store.should_auto_seed() is True
+    assert store.should_auto_seed() is False
     mock_order = PayPalOrderResult(
         success=True,
         order_id="LIVE-CLEAN-ORDER-1",

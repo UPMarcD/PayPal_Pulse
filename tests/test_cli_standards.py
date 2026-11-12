@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from pulse.cli import app
@@ -14,6 +15,15 @@ from pulse.paypal_client import PayPalAuthResult
 from pulse.store import PulseStore
 
 runner = CliRunner()
+
+
+@pytest.fixture
+def seeded_ledger(tmp_path, monkeypatch) -> object:
+    """Point the CLI at a temporary ledger and fill it, so no test reads the developer's database."""
+    monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
+    settings = PulseSettings(cache_dir=tmp_path)
+    PulseStore(settings.db_path, settings=settings).seed_telemetry()
+    return tmp_path
 
 
 def test_cli_pulse_json_stream_separation() -> None:
@@ -29,7 +39,7 @@ def test_cli_pulse_json_stream_separation() -> None:
     assert "daily_14" in data
 
 
-def test_cli_timeline_json_stream_separation() -> None:
+def test_cli_timeline_json_stream_separation(seeded_ledger) -> None:
     """Verify `pp timeline --json` outputs structured release correlation array."""
     result = runner.invoke(app, ["timeline", "--json"])
     assert result.exit_code == EX_OK
@@ -39,7 +49,7 @@ def test_cli_timeline_json_stream_separation() -> None:
     assert all("version" in r and "gross_usd" in r and "net_usd" in r for r in data)
 
 
-def test_cli_disputes_json_stream_separation() -> None:
+def test_cli_disputes_json_stream_separation(seeded_ledger) -> None:
     """Verify `pp disputes --json` outputs disputes ledger array."""
     result = runner.invoke(app, ["disputes", "--json"])
     assert result.exit_code == EX_OK
@@ -217,6 +227,7 @@ def test_cli_status_alias(tmp_path):
             paypal_client_secret="mock_secret",
             groq_api_key="mock_groq",
             cache_dir=tmp_path,
+            db_path=db_file,
         )
         res = runner.invoke(app, ["status", "--json", "--demo"])
         assert res.exit_code == 0
@@ -237,6 +248,7 @@ def test_cli_releases_alias_and_since(tmp_path):
             paypal_client_secret="mock_secret",
             groq_api_key="mock_groq",
             cache_dir=tmp_path,
+            db_path=db_file,
         )
         res = runner.invoke(app, ["releases", "--since", "2026-10-20", "--json", "--demo"])
         assert res.exit_code == 0
@@ -259,6 +271,7 @@ def test_cli_disputes_open_flag(tmp_path):
             paypal_client_secret="mock_secret",
             groq_api_key="mock_groq",
             cache_dir=tmp_path,
+            db_path=db_file,
         )
         res = runner.invoke(app, ["disputes", "--open", "--json", "--demo"])
         assert res.exit_code == 0
@@ -280,6 +293,7 @@ def test_cli_ledger_csv_export(tmp_path):
             paypal_client_secret="mock_secret",
             groq_api_key="mock_groq",
             cache_dir=tmp_path,
+            db_path=db_file,
         )
         res = runner.invoke(app, ["ledger", "--csv", "--demo"])
         assert res.exit_code == 0
@@ -318,6 +332,7 @@ def test_mcp_server_protocol_lifecycle(tmp_path):
             paypal_client_secret="mock_secret",
             groq_api_key="mock_groq",
             cache_dir=tmp_path,
+            db_path=db_file,
         )
         run_mcp_stdio(demo_mode=True)
 

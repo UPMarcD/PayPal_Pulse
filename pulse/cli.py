@@ -546,6 +546,27 @@ def cmd_pulse(
 
     if store.should_auto_seed():
         store.seed_telemetry()
+    ledger_state = store.detect_state()
+
+    if ledger_state == "fresh":
+        summary = store.get_dashboard_summary(api_connected=False)
+        if json_output:
+            sys.stdout.write(json.dumps(summary, indent=2) + "\n")
+            return
+        onboarding.welcome(console, first_run=True)
+        console.print()
+        console.print(
+            Panel(
+                "[bold #f0f6fc]This is a clean ledger, not an empty dashboard.[/bold #f0f6fc]\n"
+                "No revenue, fees, customers, or disputes appear because none are recorded.\n"
+                f"[dim]Ledger: {summary['db_path']}[/dim]",
+                title="[bold #00a8ea]No Ledger Data Yet[/bold #00a8ea]",
+                border_style="#0070ba",
+                padding=(1, 2),
+            )
+        )
+        onboarding.try_now_cards(console, sandbox_mode=False)
+        return
 
     auth_res = pp_client.authenticate(force_refresh=False)
     if refresh and auth_res.authenticated and not demo:
@@ -586,6 +607,12 @@ def cmd_pulse(
         conn_text = f"[bold yellow]● LOCAL TELEMETRY MODE[/bold yellow] | Reason: {auth_res.error}"
         if not demo and not settings.has_paypal_credentials:
             conn_text += "\n[dim]Showing local sample data. Run [bold]pp setup[/bold] to connect PayPal, or [bold]pp doctor[/bold] to check your setup.[/dim]"
+
+    if ledger_state == "sample":
+        conn_text += (
+            "\n[bold #e5a824][SAMPLE DATA][/bold #e5a824] [dim]Synthetic ledger. "
+            "Run [bold]pp reset[/bold] before recording real orders.[/dim]"
+        )
 
     console.print(Panel(conn_text, title="[bold #00a8ea]PayPal Pulse (`pp pulse`) — Merchant Command Center[/bold #00a8ea]", border_style="#0070ba"))
 
@@ -877,6 +904,28 @@ def cmd_timeline(
     if since:
         releases = [r for r in releases if r.get("released_at", "")[:10] >= since or since in r.get("released_at", "")]
 
+    if not releases:
+        if json_output:
+            sys.stdout.write("[]\n")
+            return
+        ctx = detect_project_context()
+        has_project = bool(ctx.get("git_repo")) or (Path.cwd() / ".pulse.json").exists()
+        hint = (
+            "[dim]Tag a commit with `git tag v1.0.0` and run `pp timeline` again.[/dim]"
+            if has_project
+            else "[dim]Run `pp init` inside a Git repository, or `pp demo` for a filled example.[/dim]"
+        )
+        console.print()
+        console.print(
+            Panel(
+                "[bold #f0f6fc]No release telemetry yet.[/bold #f0f6fc]\n" + hint,
+                title="[bold #00a8ea]Release-to-Revenue Timeline[/bold #00a8ea]",
+                border_style="#0070ba",
+                padding=(1, 2),
+            )
+        )
+        return
+
     if json_output:
         sys.stdout.write(json.dumps(releases, indent=2) + "\n")
         return
@@ -988,6 +1037,16 @@ def cmd_disputes(
         False,
         "--json",
         help="Output machine-readable JSON to stdout",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Show the buyer claim column in the table",
+    ),
+    include_closed: bool = typer.Option(
+        False,
+        "--all",
+        help="Include resolved and closed disputes in table and JSON output",
     ),
     demo: bool = typer.Option(
         False,
@@ -1123,7 +1182,7 @@ def cmd_disputes(
     if live_disp_probe.get("ok") and live_disp_probe.get("items"):
         store.sync_external_disputes(live_disp_probe["items"])
     disputes = store.get_disputes()
-    if only_open:
+    if only_open or not include_closed:
         disputes = [d for d in disputes if str(d.get("status", "")).upper() not in ("RESOLVED", "CLOSED", "CANCELLED")]
 
     if json_output:
@@ -1142,7 +1201,8 @@ def cmd_disputes(
     table.add_column("Client Platform / SKU", style="white")
     table.add_column("Amount", justify="right", style="bold")
     table.add_column("Due Date", no_wrap=True)
-    table.add_column("Buyer Claim & Root Cause", style="dim")
+    if verbose:
+        table.add_column("Buyer Claim & Root Cause", style="dim")
 
     for d in disputes:
         st_val = str(d["status"]).upper()
@@ -1158,7 +1218,7 @@ def cmd_disputes(
         if d.get("resolution_order_id"):
             st_badge += f" [dim]({d['resolution_order_id']})[/dim]"
         sku_entry = d.get("platform_sku", d.get("device_model", ""))
-        table.add_row(
+        row = [
             d["dispute_id"],
             st_badge,
             d["buyer_country"],
@@ -1166,8 +1226,10 @@ def cmd_disputes(
             sku_entry,
             f"{d['amount']:.2f} {d['currency']}",
             d["due_date"],
-            d["description"],
-        )
+        ]
+        if verbose:
+            row.append(d["description"])
+        table.add_row(*row)
 
     console.print(table)
     first_open_id = next(
@@ -1182,6 +1244,10 @@ def cmd_disputes(
         f"[dim]Tip: Run[/dim] [bold cyan]pp disputes --resolve {first_open_id}[/bold cyan] "
         "[dim]to draft an evidence response with Pulse AI and mint a live PayPal Sandbox replacement order.[/dim]"
     )
+    if not verbose and not include_closed:
+        console.print(
+            "[dim]Resolved disputes are hidden. Use --all to include them, or --verbose to show buyer claims.[/dim]"
+        )
 
 
 @app.command("ledger")

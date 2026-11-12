@@ -86,6 +86,7 @@ async def test_tui_disputes_browser_button_and_row_select(monkeypatch: pytest.Mo
     from textual.widgets import Button, Input
     monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
     app = PayPalPulseTUI()
+    app.store.seed_telemetry()
     opened_urls: list[str] = []
     monkeypatch.setattr("webbrowser.open", lambda url: opened_urls.append(url))
 
@@ -131,9 +132,11 @@ async def test_tui_disputes_browser_button_and_row_select(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_tui_kpi_cards_formatting_and_mrr() -> None:
+async def test_tui_kpi_cards_formatting_and_mrr(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that KPI cards format cleanly and display MRR properly on standard viewports."""
+    monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
     app = PayPalPulseTUI()
+    app.store.seed_telemetry()
     async with app.run_test(size=(120, 35)) as pilot:
         await pilot.pause()
         kpi_watch = app.query_one("#kpi-watch", Static)

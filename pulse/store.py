@@ -449,21 +449,41 @@ class PulseStore:
         self.set_meta("clean_mode", "1" if enabled else "0")
 
     def should_auto_seed(self) -> bool:
-        """Determine if synthetic baseline data should be auto-seeded.
+        """Return True only for an isolated demo database.
 
-        Returns False if:
-        - Store is already seeded, in clean mode, or contains live user data.
-        - Environment is configured for Live/Production mode (strict fail-safe default against mock pollution),
-          unless explicitly operating on an isolated demo database.
+        Real project ledgers stay empty until real orders or an explicit user
+        command record rows. Seeding them would present fabricated revenue to a
+        developer who has not connected PayPal yet.
         """
-        if self.db_path.name == "demo.db":
-            return not (self.is_seeded() or self.is_clean_mode())
-        current_mode = os.getenv("PAYPAL_MODE", getattr(self.settings, "paypal_mode", "sandbox")).lower()
-        if current_mode == "live":
+        if self.db_path.name != "demo.db":
             return False
-        if self.is_seeded() or self.is_clean_mode() or self.has_live_data():
-            return False
-        return True
+        return not (self.is_seeded() or self.is_clean_mode())
+
+    def detect_state(self) -> str:
+        """Classify this ledger as 'fresh', 'sample', or 'connected'.
+
+        'fresh' means no releases and no transactions. 'sample' means the rows
+        came from seed_telemetry, the only writer of the last_seeded_at marker.
+        'connected' means the rows came from PayPal or an explicit command.
+        """
+        if not self.is_seeded() and not self.has_live_data():
+            return "fresh"
+        if self.db_path.name == "demo.db" or self.get_meta("last_seeded_at", "").strip():
+            return "sample"
+        return "connected"
+
+    def next_actions(self) -> list[str]:
+        """Return the short list of commands that move this ledger forward."""
+        state = self.detect_state()
+        if state == "fresh":
+            return [
+                "Run `pp setup` to connect PayPal Sandbox credentials.",
+                "Run `pp init` in your project so releases carry attribution.",
+                "Run `pp order <amount> --release <tag>` to record a real order.",
+            ]
+        if state == "sample":
+            return ["Run `pp reset` to clear sample data before recording real orders."]
+        return []
 
     def reset(self, mark_clean: bool = True) -> None:
         """Wipe all telemetry tables cleanly without deleting the database file."""
@@ -472,6 +492,7 @@ class PulseStore:
             conn.execute("DELETE FROM transactions")
             conn.execute("DELETE FROM disputes")
             conn.execute("DELETE FROM daily_metrics")
+            conn.execute("DELETE FROM meta WHERE key = 'last_seeded_at'")
             conn.commit()
         if mark_clean:
             self.set_clean_mode(True)
@@ -1620,6 +1641,7 @@ class PulseStore:
         # MRR (Monthly Recurring Revenue from recurring software subscriptions + license seats)
         mrr_usd = round(total_net_usd * 0.68, 2)
 
+        state = self.detect_state()
         health_telemetry = self.compute_merchant_health(
             open_disputes_count=len(open_disputes),
             total_orders=total_paid,
@@ -1628,8 +1650,19 @@ class PulseStore:
             api_latency_ms=api_latency_ms,
             api_connected=api_connected,
         )
+        health_score = health_telemetry["composite_score"]
+        health_rating = health_telemetry["rating"]
+        if state == "fresh":
+            # A ledger with no rows has no measurable health. A score here would
+            # imply a baseline that does not exist.
+            health_score = 0.0
+            health_rating = "NO DATA"
+            health_telemetry = {**health_telemetry, "composite_score": health_score, "rating": health_rating}
 
         return {
+            "state": state,
+            "db_path": str(self.db_path),
+            "next_actions": self.next_actions(),
             "seeded": len(releases) > 0,
             "last_seeded_at": self.get_meta("last_seeded_at", "Never"),
             "last_live_invoice_id": self.get_meta("last_live_invoice_id", ""),
@@ -1646,8 +1679,8 @@ class PulseStore:
             "total_paid": total_paid,
             "overall_conversion_pct": overall_conv,
             "mrr_usd": mrr_usd,
-            "health_score": health_telemetry["composite_score"],
-            "health_rating": health_telemetry["rating"],
+            "health_score": health_score,
+            "health_rating": health_rating,
             "health_telemetry": health_telemetry,
             "open_disputes_count": len(open_disputes),
             "total_disputes_count": len(disputes),

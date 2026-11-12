@@ -75,6 +75,8 @@ pp tui
 pp mcp
 ```
 
+On a machine with no ledger yet, `pp pulse` shows a first-run card with a short list of next steps. It never fabricates revenue figures.
+
 ---
 
 ## Release-to-Revenue Telemetry: Hooking Up Your App
