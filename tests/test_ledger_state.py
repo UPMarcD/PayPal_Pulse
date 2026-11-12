@@ -88,3 +88,44 @@ def test_demo_database_still_auto_seeds(tmp_path) -> None:
     assert store.detect_state() == "fresh"
     store.seed_telemetry()
     assert store.detect_state() == "sample"
+
+def test_created_order_is_pending_not_revenue(tmp_path) -> None:
+    """A CREATED order is recorded, but it is not paid revenue until captured."""
+    store = _store(tmp_path)
+    created = PayPalOrderResult(
+        success=True,
+        order_id="PP-CREATED-1",
+        status="CREATED",
+        amount=25.00,
+        currency="USD",
+    )
+    store.record_live_order(created, release_version="v1.0.0")
+
+    summary = store.get_dashboard_summary()
+    assert summary["total_gross_usd"] == 0.0
+    assert summary["total_net_usd"] == 0.0
+    assert summary["total_pending_orders"] == 1
+    assert summary["pending_gross_usd"] == 25.00
+
+    rel = next(
+        r for r in store.get_releases(include_git_tags=False) if r["version"] == "v1.0.0"
+    )
+    assert rel["paid_conversions"] == 0
+    assert rel["gross_usd"] == 0.0
+
+
+def test_captured_order_counts_as_revenue(tmp_path) -> None:
+    """A COMPLETED order is revenue: rollups and the pending split both move."""
+    store = _store(tmp_path)
+    store.record_live_order(_order("PP-CAPTURED-1", amount=25.00), release_version="v1.0.0")
+
+    summary = store.get_dashboard_summary()
+    assert summary["total_gross_usd"] == 25.00
+    assert summary["total_net_usd"] > 0.0
+    assert summary["total_pending_orders"] == 0
+
+    rel = next(
+        r for r in store.get_releases(include_git_tags=False) if r["version"] == "v1.0.0"
+    )
+    assert rel["paid_conversions"] == 1
+    assert rel["gross_usd"] == 25.00

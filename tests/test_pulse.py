@@ -111,11 +111,14 @@ def test_sqlite_dual_engine_store_isolated(tmp_path: Path) -> None:
     assert rec["net"] < 19.99
 
     after_v121 = next(r for r in store.get_releases(include_git_tags=False) if r["version"] == "v1.2.1")
-    assert after_v121["paid_conversions"] == before_v121["paid_conversions"] + 1
-    assert after_v121["conversion_rate"] > before_v121["conversion_rate"]
+    # A CREATED order is pending, not paid. Release rollups, conversion, and the
+    # daily series must not move until PayPal reports the order as captured.
+    assert after_v121["paid_conversions"] == before_v121["paid_conversions"]
+    assert after_v121["conversion_rate"] == before_v121["conversion_rate"]
 
     after_today_orders = store.get_recent_daily_metrics(days=14)[-1]["paid_orders"]
-    assert after_today_orders == before_today_orders + 1
+    assert after_today_orders == before_today_orders
+    assert store.get_dashboard_summary()["total_pending_orders"] >= 1
 
     # Recording duplicate paypal_id updates status without double-counting rollups
     dup_order = PayPalOrderResult(

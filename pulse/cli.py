@@ -645,7 +645,8 @@ def cmd_pulse(
     )
 
     paid_orders = summary.get("total_orders", summary.get("total_paid", 0))
-    release_count = len(summary.get("releases", []))
+    pending_orders = summary.get("total_pending_orders", 0)
+    pending_gross = summary.get("pending_gross_usd", 0.0)
     telemetry = summary.get("health_telemetry", {})
     score_val = summary["health_score"]
     rating_str = summary.get("health_rating", "HEALTHY")
@@ -653,7 +654,7 @@ def cmd_pulse(
 
     kpi_right = Panel(
         f"[bold white]Paid Orders:[/bold white]         [bold]{paid_orders:,}[/bold]\n"
-        f"[bold white]Releases Tracked:[/bold white]    [bold]{release_count:,}[/bold]\n"
+        f"[bold white]Pending Capture:[/bold white]     [dim]{pending_orders:,} (${pending_gross:,.2f} recorded)[/dim]\n"
         f"[bold white]30-Day Net Run-Rate:[/bold white] [bold green]${summary['net_run_rate_30d_usd']:,.2f}[/bold green]\n"
         f"[bold white]Merchant Health Index:[/bold white] [{rating_color}]{score_val} / 100 [{rating_str}][/{rating_color}]",
         title="[bold #00a8ea]Orders & Revenue[/bold #00a8ea]",

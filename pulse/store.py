@@ -76,6 +76,12 @@ CURRENCY_SYMBOLS = {
 
 ZERO_DECIMAL_CURRENCIES = {"JPY", "HUF", "TWD"}
 
+# PayPal Orders v2 statuses that mean money has actually moved. An order that is
+# only CREATED or APPROVED has not been captured, so it must not be counted as
+# revenue or as a paid conversion.
+PAID_TRANSACTION_STATUSES = ("COMPLETED", "CAPTURED", "DISPUTED")
+PENDING_TRANSACTION_STATUSES = ("CREATED", "APPROVED", "PENDING")
+
 
 def format_currency_amount(amount: float, currency: str) -> str:
     """Format numeric amount according to PayPal REST API decimal rules.
@@ -675,6 +681,9 @@ class PulseStore:
         usd_fee = round(fee * fx, 2)
         usd_net = round(net * fx, 2)
         created_at = order.create_time or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # An order is only revenue once PayPal has captured it. CREATED and
+        # APPROVED orders are recorded for instant feedback but stay pending.
+        is_paid = str(order.status or "").upper() in PAID_TRANSACTION_STATUSES
 
         with self._connect() as conn:
             existing = conn.execute(
@@ -735,70 +744,72 @@ class PulseStore:
                         (effective_release, rel_title, rel_date, commit_sha),
                     )
 
-                # Update release rollup and recalculate conversion_rate
-                conn.execute(
-                    """
-                    UPDATE releases
-                    SET paid_conversions = paid_conversions + 1,
-                        conversion_rate = CASE
-                            WHEN installs > 0 THEN ROUND(((paid_conversions + 1) * 100.0) / installs, 2)
-                            ELSE 0.0
-                        END,
-                        gross_usd = ROUND(gross_usd + ?, 2),
-                        fees_usd = ROUND(fees_usd + ?, 2),
-                        net_usd = ROUND(net_usd + ?, 2)
-                    WHERE version = ?
-                    """,
-                    (usd_gross, usd_fee, usd_net, effective_release),
-                )
-                # Update today's row in daily_metrics (or insert on clean board) so 14-day sparkline & bar chart update instantaneously
-                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                existing_day = conn.execute(
-                    "SELECT day_date FROM daily_metrics WHERE day_date = ?",
-                    (today_str,),
-                ).fetchone()
-                if existing_day:
+                # Roll up revenue only for captured orders. A CREATED or APPROVED
+                # order stays pending until PayPal reports it as captured.
+                if is_paid:
                     conn.execute(
                         """
-                        UPDATE daily_metrics
-                        SET paid_orders = paid_orders + 1,
+                        UPDATE releases
+                        SET paid_conversions = paid_conversions + 1,
+                            conversion_rate = CASE
+                                WHEN installs > 0 THEN ROUND(((paid_conversions + 1) * 100.0) / installs, 2)
+                                ELSE 0.0
+                            END,
                             gross_usd = ROUND(gross_usd + ?, 2),
                             fees_usd = ROUND(fees_usd + ?, 2),
-                            net_usd = ROUND(net_usd + ?, 2),
-                            release_version = ?
-                        WHERE day_date = ?
+                            net_usd = ROUND(net_usd + ?, 2)
+                        WHERE version = ?
                         """,
-                        (usd_gross, usd_fee, usd_net, effective_release, today_str),
+                        (usd_gross, usd_fee, usd_net, effective_release),
                     )
-                else:
-                    max_day_row = conn.execute(
-                        "SELECT MAX(day_date) AS max_d FROM daily_metrics WHERE day_date <= ?",
+                    # Update today's row in daily_metrics (or insert on clean board) so 14-day sparkline & bar chart update instantaneously
+                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    existing_day = conn.execute(
+                        "SELECT day_date FROM daily_metrics WHERE day_date = ?",
                         (today_str,),
                     ).fetchone()
-                    seeded_flag = conn.execute(
-                        "SELECT value FROM meta WHERE key = 'last_seeded_at'"
-                    ).fetchone()
-                    if max_day_row and max_day_row["max_d"] and seeded_flag is not None and not self.is_clean_mode():
+                    if existing_day:
                         conn.execute(
                             """
                             UPDATE daily_metrics
                             SET paid_orders = paid_orders + 1,
                                 gross_usd = ROUND(gross_usd + ?, 2),
                                 fees_usd = ROUND(fees_usd + ?, 2),
-                                net_usd = ROUND(net_usd + ?, 2)
+                                net_usd = ROUND(net_usd + ?, 2),
+                                release_version = ?
                             WHERE day_date = ?
                             """,
-                            (usd_gross, usd_fee, usd_net, max_day_row["max_d"]),
+                            (usd_gross, usd_fee, usd_net, effective_release, today_str),
                         )
                     else:
-                        conn.execute(
-                            """
-                            INSERT INTO daily_metrics (
-                                day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
-                            ) VALUES (?, 1, 1, ?, ?, ?, 0, ?)
-                            """,
-                            (today_str, usd_gross, usd_fee, usd_net, effective_release),
-                        )
+                        max_day_row = conn.execute(
+                            "SELECT MAX(day_date) AS max_d FROM daily_metrics WHERE day_date <= ?",
+                            (today_str,),
+                        ).fetchone()
+                        seeded_flag = conn.execute(
+                            "SELECT value FROM meta WHERE key = 'last_seeded_at'"
+                        ).fetchone()
+                        if max_day_row and max_day_row["max_d"] and seeded_flag is not None and not self.is_clean_mode():
+                            conn.execute(
+                                """
+                                UPDATE daily_metrics
+                                SET paid_orders = paid_orders + 1,
+                                    gross_usd = ROUND(gross_usd + ?, 2),
+                                    fees_usd = ROUND(fees_usd + ?, 2),
+                                    net_usd = ROUND(net_usd + ?, 2)
+                                WHERE day_date = ?
+                                """,
+                                (usd_gross, usd_fee, usd_net, max_day_row["max_d"]),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO daily_metrics (
+                                    day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
+                                ) VALUES (?, 1, 1, ?, ?, ?, 0, ?)
+                                """,
+                                (today_str, usd_gross, usd_fee, usd_net, effective_release),
+                            )
             conn.commit()
 
         return {
@@ -1295,11 +1306,24 @@ class PulseStore:
         """Backward-compatible alias for seed_telemetry."""
         return self.seed_telemetry(live_orders=live_orders, live_invoice=live_invoice)
 
-    def get_currency_breakdown(self) -> list[dict[str, Any]]:
-        """Return multi-currency gross, fee drag, and net take-home breakdown."""
+    def get_currency_breakdown(
+        self, statuses: tuple[str, ...] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return multi-currency gross, fee drag, and net take-home breakdown.
+
+        When ``statuses`` is given, only transactions in those statuses are
+        summed. Pass PAID_TRANSACTION_STATUSES for revenue, and
+        PENDING_TRANSACTION_STATUSES for orders that are not yet captured.
+        """
+        where = ""
+        params: tuple[Any, ...] = ()
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            where = f"WHERE UPPER(status) IN ({placeholders})"
+            params = tuple(s.upper() for s in statuses)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     currency,
                     COUNT(*) AS tx_count,
@@ -1310,9 +1334,11 @@ class PulseStore:
                     ROUND(SUM(usd_fee), 2) AS usd_fee,
                     ROUND(SUM(usd_net), 2) AS usd_net
                 FROM transactions
+                {where}
                 GROUP BY currency
                 ORDER BY usd_gross DESC
-                """
+                """,
+                params,
             ).fetchall()
 
         results = []
@@ -1355,6 +1381,7 @@ class PulseStore:
                            ROUND(SUM(usd_fee), 2) as sum_fee,
                            ROUND(SUM(usd_net), 2) as sum_net
                     FROM transactions
+                    WHERE UPPER(status) IN ('COMPLETED', 'CAPTURED', 'DISPUTED')
                     GROUP BY release_version
                     """
                 ).fetchall()
@@ -1373,6 +1400,8 @@ class PulseStore:
             }
 
         tag_meta_map = self._discover_git_tag_metadata() if include_git_tags else {}
+        seeded_ledger = bool(self.get_meta("last_seeded_at", ""))
+        always_reconcile = not seeded_ledger
         releases = [dict(r) for r in rows]
         for rel in releases:
             ver = rel["version"]
@@ -1386,18 +1415,25 @@ class PulseStore:
                 if t_meta.get("subject") and rel.get("title", "").endswith("(Release)"):
                     rel["title"] = f"{ver} — {t_meta['subject']}"
 
-            # Reconcile with transaction ledger if release gross is zero or out of sync
-            if ver in txn_stats and float(rel["gross_usd"] or 0.0) == 0.0:
-                rel["gross_usd"] = float(txn_stats[ver]["sum_gross"] or 0.0)
-                rel["fees_usd"] = float(txn_stats[ver]["sum_fee"] or 0.0)
-                rel["net_usd"] = float(txn_stats[ver]["sum_net"] or 0.0)
-                rel["paid_conversions"] = int(txn_stats[ver]["paid_count"] or 0)
-                if rel["installs"] < rel["paid_conversions"]:
-                    rel["installs"] = rel["paid_conversions"]
-                rel["conversion_rate"] = round(
-                    (rel["paid_conversions"] * 100.0) / max(rel["installs"], 1), 2
+            # Reconcile with the transaction ledger. A real (non-sample) ledger is
+            # always reconciled so a status change from CREATED to COMPLETED is
+            # reflected. A seeded sample ledger keeps its synthetic rollups.
+            stats = txn_stats.get(ver)
+            if always_reconcile or (
+                stats is not None and float(rel["gross_usd"] or 0.0) == 0.0
+            ):
+                rel["gross_usd"] = float((stats or {}).get("sum_gross") or 0.0)
+                rel["fees_usd"] = float((stats or {}).get("sum_fee") or 0.0)
+                rel["net_usd"] = float((stats or {}).get("sum_net") or 0.0)
+                rel["paid_conversions"] = int((stats or {}).get("paid_count") or 0)
+                # Never invent an install base. Without install telemetry the
+                # conversion rate is unknown, not 100%.
+                rel["conversion_rate"] = (
+                    round((rel["paid_conversions"] * 100.0) / int(rel["installs"]), 2)
+                    if int(rel["installs"] or 0) > 0
+                    else 0.0
                 )
-                if rel["status_badge"] == "GIT TAG":
+                if stats is not None and rel["status_badge"] == "GIT TAG":
                     rel["status_badge"] = "ACTIVE"
                     rel["ai_diagnostic"] = "Active release receiving live PayPal transactions."
 
@@ -1738,7 +1774,10 @@ class PulseStore:
         api_connected: bool = True,
     ) -> dict[str, Any]:
         """Compute complete KPI summary for `pp pulse`, `pp ask`, and `pp tui`."""
-        currencies = self.get_currency_breakdown()
+        currencies = self.get_currency_breakdown(statuses=PAID_TRANSACTION_STATUSES)
+        pending_currencies = self.get_currency_breakdown(
+            statuses=PENDING_TRANSACTION_STATUSES
+        )
         releases = self.get_releases(include_git_tags=False)
         disputes = self.get_disputes()
         open_disputes = [
@@ -1751,6 +1790,10 @@ class PulseStore:
         total_gross_usd = round(sum(c["usd_gross"] for c in currencies), 2)
         total_fees_usd = round(sum(c["usd_fee"] for c in currencies), 2)
         total_net_usd = round(sum(c["usd_net"] for c in currencies), 2)
+        total_pending_orders = sum(int(c["tx_count"]) for c in pending_currencies)
+        pending_gross_usd = round(
+            sum(c["usd_gross"] for c in pending_currencies), 2
+        )
         fee_drag_pct = (
             round((total_fees_usd / total_gross_usd) * 100, 1)
             if total_gross_usd > 0
@@ -1811,6 +1854,9 @@ class PulseStore:
             "active_customers": active_users,
             "total_orders": total_paid,
             "total_paid": total_paid,
+            "total_pending_orders": total_pending_orders,
+            "pending_gross_usd": pending_gross_usd,
+            "pending_currencies": pending_currencies,
             "overall_conversion_pct": overall_conv,
             "net_run_rate_30d_usd": net_run_rate_30d_usd,
             "health_score": health_score,
