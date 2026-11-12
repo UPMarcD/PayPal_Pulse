@@ -261,7 +261,12 @@ def test_prepass_already_resolved_dispute_guard(tmp_path):
     store.seed_telemetry()
 
     # Mark dispute as already resolved
-    store.mark_dispute_resolved("PP-D-90411-DE", "Evidence already submitted", "ORDER-ORIG-999")
+    store.mark_dispute_resolved(
+        "PP-D-90411-DE",
+        "Evidence already submitted",
+        "ORDER-ORIG-999",
+        new_status="RESOLVED",
+    )
     rec = store.get_dispute_by_id("PP-D-90411-DE")
     assert rec["status"] == "RESOLVED"
 

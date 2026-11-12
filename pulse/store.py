@@ -93,8 +93,8 @@ OPEN_DISPUTE_STATUSES = (
     "OPEN",
     "WAITING_FOR_SELLER_RESPONSE",
     "WAITING_FOR_BUYER_RESPONSE",
-    "REQUIRED_ACTION",
     "UNDER_REVIEW",
+    "OTHER",
 )
 
 
@@ -1225,7 +1225,12 @@ class PulseStore:
         elif event_type == "CUSTOMER.DISPUTE.RESOLVED":
             dispute_id = resource.get("dispute_id", "")
             if dispute_id:
-                self.mark_dispute_resolved(dispute_id, "Resolved via webhook event", "PP-RESOLVE-WEBHOOK")
+                self.mark_dispute_resolved(
+                    dispute_id,
+                    "Resolved via webhook event",
+                    "PP-RESOLVE-WEBHOOK",
+                    new_status="RESOLVED",
+                )
             return {"dispute_id": dispute_id, "status": "RESOLVED"}
 
         return {"event_type": event_type, "status": "IGNORED"}
@@ -1590,15 +1595,18 @@ class PulseStore:
                 ).fetchall()
             }
             # Aggregate open disputes by release_version
+            dispute_status_slots = ", ".join("?" for _ in OPEN_DISPUTE_STATUSES)
+            dispute_status_values = tuple(s.upper() for s in OPEN_DISPUTE_STATUSES)
             dispute_stats = {
                 r["release_version"]: int(r["open_cnt"] or 0)
                 for r in conn.execute(
-                    """
+                    f"""
                     SELECT release_version, COUNT(*) as open_cnt
                     FROM disputes
-                    WHERE UPPER(status) = 'OPEN'
+                    WHERE UPPER(status) IN ({dispute_status_slots})
                     GROUP BY release_version
-                    """
+                    """,
+                    dispute_status_values,
                 ).fetchall()
             }
 
@@ -1847,10 +1855,10 @@ class PulseStore:
             current_status = row["status"]
 
             # Gateway fidelity: submitting evidence does not equate to dispute adjudication.
-            # Mock / demonstration fixture disputes (PP-D-) resolve immediately on remediation.
-            # Real disputes (PP-R-) reflect gateway reality: submitting evidence sets status to
-            # WAITING_FOR_BUYER_RESPONSE or UNDER_REVIEW, and only becomes RESOLVED when PayPal confirms.
-            if dispute_id.strip().upper().startswith("PP-D-"):
+            # Only the isolated demo ledger short-circuits to RESOLVED. A real
+            # ledger keeps the status PayPal returned.
+            demo_ledger = bool(getattr(self.settings, "demo_mode", False))
+            if demo_ledger and dispute_id.strip().upper().startswith("PP-D-"):
                 target_status = "RESOLVED"
             elif new_status:
                 target_status = new_status
@@ -2490,12 +2498,15 @@ class PulseStore:
                 if not tx_id:
                     continue
                 event_code = str(tx_info.get("transaction_event_code", "") or "").upper()
-                # Keep payments (T00) and reversals/refunds (T11). Skip fees,
-                # currency conversions, deposits, withdrawals, bonuses, and
-                # adjustments; those are not merchant sales.
-                if event_code.startswith(
-                    ("T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T12", "T13", "T14", "T15")
+                # Allow only PayPal account-to-account payments (T00) and the
+                # refund/reversal codes. Every other T-code is a fee, transfer,
+                # hold, or display row, not merchant revenue.
+                if event_code and not (
+                    event_code.startswith("T00")
+                    or event_code in ("T1106", "T1107", "T1115")
                 ):
+                    continue
+                if event_code in ("T0015", "T0016"):
                     continue
                 amt_obj = tx_info.get("transaction_amount", {})
                 # Preserve the sign. PayPal reports refunds as negative amounts;

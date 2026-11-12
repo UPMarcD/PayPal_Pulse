@@ -138,6 +138,7 @@ def test_sqlite_dual_engine_store_isolated(tmp_path: Path) -> None:
         "PP-D-90411-DE",
         "Patched in v1.2.2",
         "TEST-DYNAMIC-ORDER-1000",
+        new_status="RESOLVED",
     )
     assert resolved_ok is True
     updated_summary = store.get_dashboard_summary()
@@ -147,14 +148,47 @@ def test_sqlite_dual_engine_store_isolated(tmp_path: Path) -> None:
     assert "2 DE" in rel_v121["status_badge"]
 
     # Resolve remaining 2 disputes and verify badge updates to RESOLVED
-    store.mark_dispute_resolved("PP-D-90418-DE", "Patched in v1.2.2", "TEST-DYNAMIC-ORDER-1001")
-    store.mark_dispute_resolved("PP-D-90425-DE", "Patched in v1.2.2", "TEST-DYNAMIC-ORDER-1002")
+    store.mark_dispute_resolved("PP-D-90418-DE", "Patched in v1.2.2", "TEST-DYNAMIC-ORDER-1001", new_status="RESOLVED")
+    store.mark_dispute_resolved("PP-D-90425-DE", "Patched in v1.2.2", "TEST-DYNAMIC-ORDER-1002", new_status="RESOLVED")
     rel_all_resolved = next(r for r in store.get_releases(include_git_tags=False) if r["version"] == "v1.2.1")
     assert rel_all_resolved["dispute_count"] == 0
     assert "RESOLVED" in rel_all_resolved["status_badge"]
 
     # Non-existent dispute returns False
     assert store.mark_dispute_resolved("NON-EXISTENT-ID", "notes", "ORD") is False
+
+
+def test_open_dispute_statuses_are_consistent(tmp_path: Path) -> None:
+    """Verify the timeline and dashboard agree on seller-action disputes."""
+    store = PulseStore(db_path=tmp_path / "dispute_status.db")
+    store.seed_telemetry()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE disputes SET status = 'WAITING_FOR_SELLER_RESPONSE' "
+            "WHERE dispute_id = 'PP-D-90411-DE'"
+        )
+        conn.commit()
+
+    summary = store.get_dashboard_summary()
+    release = next(
+        r for r in store.get_releases(include_git_tags=False) if r["version"] == "v1.2.1"
+    )
+    assert summary["open_disputes_count"] == 3
+    assert release["dispute_count"] == 3
+
+
+def test_real_ledger_keeps_paypal_dispute_status(tmp_path: Path) -> None:
+    """Verify a non-demo PP-D- dispute is not force-resolved locally."""
+    store = PulseStore(db_path=tmp_path / "real_dispute.db")
+    store.seed_telemetry()
+    ok = store.mark_dispute_resolved(
+        "PP-D-90411-DE",
+        "Evidence submitted",
+        "ORD-1",
+        new_status="WAITING_FOR_SELLER_RESPONSE",
+    )
+    assert ok is True
+    assert store.get_dispute_by_id("PP-D-90411-DE")["status"] == "WAITING_FOR_SELLER_RESPONSE"
 
 
 def test_concurrent_sqlite_writes(tmp_path: Path) -> None:
@@ -413,7 +447,10 @@ def test_textual_tui_interactive_pilot(tmp_path: Path) -> None:
             w_res = tui.handle_resolve_dispute()
             await safe_wait(w_res)
             await pilot.pause()
-            assert iso_store.get_dashboard_summary()["open_disputes_count"] == synced_open - 1
+            # Evidence submission does not close a dispute. PayPal still owns
+            # the status, so the open count only drops when PayPal resolves it.
+            assert iso_store.get_dispute_by_id("PP-D-90411-DE")["status"] != "RESOLVED"
+            assert iso_store.get_dashboard_summary()["open_disputes_count"] == synced_open
 
             # Switch to Ask Pulse tab ('a') and verify GroqChat-modeled UI elements + background worker
             await pilot.press("a")

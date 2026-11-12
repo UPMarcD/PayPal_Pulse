@@ -271,6 +271,33 @@ def test_record_live_order_capture_applies_rollup(tmp_path: Path) -> None:
     assert summary["total_orders"] == 1
 
 
+def test_sync_allows_only_payment_and_refund_codes(tmp_path: Path) -> None:
+    """Verify holds, withdrawals, and display rows are not ingested as sales."""
+    store = PulseStore(db_path=tmp_path / "tcodes.db")
+
+    def row(tx_id: str, value: str, event: str) -> dict:
+        return {
+            "transaction_info": {
+                "transaction_id": tx_id,
+                "transaction_initiation_date": "2026-11-10T14:30:00Z",
+                "transaction_amount": {"currency_code": "USD", "value": value},
+                "fee_amount": {"currency_code": "USD", "value": "-0.34"},
+                "transaction_status": "S",
+                "transaction_event_code": event,
+            },
+            "payer_info": {"country_code": "US"},
+        }
+
+    rows = [
+        row("PP-HOLD", "100.00", "T2101"),
+        row("PP-WITHDRAW", "25.00", "T1700"),
+        row("PP-DISPLAY", "50.00", "T9800"),
+        row("PP-PAYMENT", "10.00", "T0006"),
+    ]
+    assert store.sync_external_transactions(rows) == 1
+    assert [t["paypal_id"] for t in store.get_transactions()] == ["PP-PAYMENT"]
+
+
 def test_sync_cli_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Verify pp sync command executes authentication, dispute sync, and transaction sync."""
     db_file = tmp_path / "cli_sync.db"

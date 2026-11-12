@@ -385,7 +385,7 @@ class PayPalClient:
                     "start_date": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "end_date": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "fields": "all",
-                    "balance_affecting_records_only": "true",
+                    "balance_affecting_records_only": "Y",
                     "page_size": str(page_size),
                     "page": str(page),
                 }

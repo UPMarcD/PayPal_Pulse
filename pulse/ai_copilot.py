@@ -20,7 +20,6 @@ FALLBACK_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.8-27b",
-    "qwen/qwen3.6-27b",
 ]
 
 _ACTIVE_GROQ_MODEL: str | None = None
