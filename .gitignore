@@ -23,6 +23,7 @@ build/
 AGENTS.md
 docs/
 .agents/
+.gemini/
 
 # Video, audio, demo production assets, and external tooling
 assets_demo/
@@ -45,4 +46,5 @@ video/assets/*.ansi
 video/assets/*.txt
 video/assets/*.html
 video/assets/data.js
+video/assets/captions.json
 
