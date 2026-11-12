@@ -155,7 +155,7 @@ class PulseSettings(BaseModel):
     ai_base_url: str = Field(default="")
     ai_api_key: str = Field(default="")
     ai_model: str = Field(default="")
-    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_model: str = Field(default="openai/gpt-oss-120b")
     cache_dir: Path = Field(default_factory=resolve_cache_dir)
     custom_db_path: Path | None = Field(default=None, alias="db_path")
     env_path: Path | None = Field(default=None)
@@ -277,7 +277,7 @@ class PulseSettings(BaseModel):
             return "anthropic/claude-3.5-sonnet"
         if provider == "ollama":
             return "llama3.3"
-        return self.groq_model or "llama-3.3-70b-versatile"
+        return self.groq_model or "openai/gpt-oss-120b"
 
     @property
     def has_ai_credentials(self) -> bool:
@@ -329,7 +329,7 @@ def get_settings(
         ai_base_url=_resolve("AI_BASE_URL"),
         ai_api_key=_resolve("AI_API_KEY"),
         ai_model=_resolve("AI_MODEL"),
-        groq_model=_resolve("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        groq_model=_resolve("GROQ_MODEL", "openai/gpt-oss-120b"),
         cache_dir=resolved_cache,
         env_path=env_file,
         demo_mode=is_demo,

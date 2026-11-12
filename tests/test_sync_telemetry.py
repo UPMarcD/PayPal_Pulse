@@ -91,6 +91,76 @@ def test_sync_external_transactions_ingestion(tmp_path: Path) -> None:
     assert tx1["status"] == "COMPLETED"
 
 
+def test_sync_external_transactions_refund_and_denied(tmp_path: Path) -> None:
+    """Verify refunds reduce revenue and denied/fee rows are not counted as sales."""
+    db_file = tmp_path / "refund_test.db"
+    store = PulseStore(db_path=db_file)
+
+    details = [
+        {
+            "transaction_info": {
+                "transaction_id": "PP-SALE-1",
+                "transaction_initiation_date": "2026-11-10T14:30:00Z",
+                "transaction_amount": {"currency_code": "USD", "value": "100.00"},
+                "fee_amount": {"currency_code": "USD", "value": "-4.99"},
+                "transaction_status": "S",
+                "transaction_event_code": "T0006",
+            },
+            "payer_info": {"country_code": "US"},
+        },
+        {
+            "transaction_info": {
+                "transaction_id": "PP-REFUND-1",
+                "transaction_initiation_date": "2026-11-11T14:30:00Z",
+                "transaction_amount": {"currency_code": "USD", "value": "-100.00"},
+                "fee_amount": {"currency_code": "USD", "value": "4.99"},
+                "transaction_status": "S",
+                "transaction_event_code": "T1107",
+            },
+            "payer_info": {"country_code": "US"},
+        },
+        {
+            "transaction_info": {
+                "transaction_id": "PP-DENIED-1",
+                "transaction_initiation_date": "2026-11-12T14:30:00Z",
+                "transaction_amount": {"currency_code": "USD", "value": "50.00"},
+                "fee_amount": {"currency_code": "USD", "value": "0"},
+                "transaction_status": "D",
+                "transaction_event_code": "T0006",
+            },
+            "payer_info": {"country_code": "US"},
+        },
+        {
+            "transaction_info": {
+                "transaction_id": "PP-FEE-1",
+                "transaction_initiation_date": "2026-11-12T15:00:00Z",
+                "transaction_amount": {"currency_code": "USD", "value": "-1.00"},
+                "fee_amount": {"currency_code": "USD", "value": "0"},
+                "transaction_status": "S",
+                "transaction_event_code": "T0107",
+            },
+            "payer_info": {"country_code": "US"},
+        },
+    ]
+
+    added = store.sync_external_transactions(details)
+    assert added == 3  # the fee row is skipped
+
+    txs = {t["paypal_id"]: t for t in store.get_transactions()}
+    assert txs["PP-SALE-1"]["status"] == "COMPLETED"
+    assert txs["PP-SALE-1"]["gross_amount"] == 100.00
+    assert txs["PP-SALE-1"]["net_amount"] == 95.01
+    assert txs["PP-REFUND-1"]["status"] == "REFUNDED"
+    assert txs["PP-REFUND-1"]["gross_amount"] == -100.00
+    assert txs["PP-REFUND-1"]["net_amount"] == -95.01
+    assert txs["PP-DENIED-1"]["status"] == "DENIED"
+
+    summary = store.get_dashboard_summary()
+    # One paid order, fully refunded: revenue nets to zero.
+    assert summary["total_orders"] == 1
+    assert summary["total_gross_usd"] == 0.0
+
+
 def test_sync_cli_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Verify pp sync command executes authentication, dispute sync, and transaction sync."""
     db_file = tmp_path / "cli_sync.db"

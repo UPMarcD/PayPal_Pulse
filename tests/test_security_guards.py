@@ -221,7 +221,7 @@ def test_untrusted_platform_sku_fenced_in_prompt():
                 "amount": 9.99,
                 "currency": "USD",
                 "due_date": "2026-11-25",
-                "reason": "DEFECTIVE_ITEM",
+                "reason": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
                 "description": "App failed",
             }
         ],
@@ -350,7 +350,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
         {
             "dispute_id": "PP-D-BUG-01",
             "paypal_transaction_id": "TX-BUG-01",
-            "reason": "SIGNIFICANTLY_NOT_AS_DESCRIBED",
+            "reason": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
             "description": 'Buyer (Alice): "CLI crashes on startup with segfault"',
             "platform_sku": "PulseCore CLI",
             "release_version": "v1.2.1",

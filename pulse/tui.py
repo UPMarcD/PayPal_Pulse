@@ -213,7 +213,7 @@ class PayPalPulseTUI(App):
         margin: 0;
     }
     #dash-sparkline {
-        height: 3;
+        height: 4;
         margin: 0;
         border: round #1c2e4a;
         background: #111c2e;
@@ -688,7 +688,7 @@ class PayPalPulseTUI(App):
                             allow_blank=False,
                         )
                         yield Static("Model ID (leave blank for recommended default):", classes="settings-label")
-                        yield Input(placeholder="e.g. llama-3.3-70b-versatile, gpt-4o, claude-3-5-sonnet...", id="settings-ai-model", classes="settings-input")
+                        yield Input(placeholder="e.g. openai/gpt-oss-120b, gpt-4o, claude-3-5-sonnet...", id="settings-ai-model", classes="settings-input")
                         yield Static("API Key:", classes="settings-label")
                         yield Input(placeholder="API Key for selected provider...", password=True, id="settings-ai-key", classes="settings-input")
                         yield Static("Base URL (optional, for Ollama or Custom Endpoint):", classes="settings-label")

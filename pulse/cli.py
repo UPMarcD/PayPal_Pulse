@@ -1049,6 +1049,21 @@ def cmd_disputes(
         "-y",
         help="Skip confirmation prompt on dispute resolution",
     ),
+    tracking_number: Optional[str] = typer.Option(
+        None,
+        "--tracking-number",
+        help="Carrier tracking number for PROOF_OF_FULFILLMENT evidence",
+    ),
+    carrier: str = typer.Option(
+        "OTHER",
+        "--carrier",
+        help="Carrier name used with --tracking-number",
+    ),
+    refund_id: Optional[str] = typer.Option(
+        None,
+        "--refund-id",
+        help="PayPal refund ID for PROOF_OF_REFUND evidence",
+    ),
     only_open: bool = typer.Option(
         False,
         "--open",
@@ -1136,6 +1151,12 @@ def cmd_disputes(
             buyer_message=plan["buyer_message"],
             resolution_strategy=plan["resolution_strategy"],
             replacement_order=rep_order,
+            tracking_info=(
+                [{"carrier_name": carrier, "tracking_number": tracking_number}]
+                if tracking_number
+                else None
+            ),
+            refund_ids=[refund_id] if refund_id else None,
         )
 
         order_id_str = rep_order.order_id if rep_order.success else plan["remediation_id"]

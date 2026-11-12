@@ -17,11 +17,10 @@ from pulse.store import PulseStore, recent_commits
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.8-27b",
-    "llama-3.1-8b-instant",
+    "qwen/qwen3.6-27b",
 ]
 
 _ACTIVE_GROQ_MODEL: str | None = None
@@ -87,6 +86,9 @@ PAYPAL_COPILOT_TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "dispute_id": {"type": "string", "description": "The exact dispute ID to resolve (e.g. PP-D-90411-DE)"},
+                    "tracking_number": {"type": "string", "description": "Carrier tracking number for a shipment-based fulfillment proof"},
+                    "carrier_name": {"type": "string", "description": "Carrier name for the tracking number, e.g. OTHER"},
+                    "refund_id": {"type": "string", "description": "PayPal refund ID when proof of refund is required"},
                 },
                 "required": ["dispute_id"],
             },
@@ -910,6 +912,21 @@ def ask_copilot(
                                 buyer_message=plan["buyer_message"],
                                 resolution_strategy=plan["resolution_strategy"],
                                 replacement_order=rep_order,
+                                tracking_info=(
+                                    [
+                                        {
+                                            "carrier_name": str(args.get("carrier_name") or "OTHER"),
+                                            "tracking_number": str(args.get("tracking_number")),
+                                        }
+                                    ]
+                                    if args.get("tracking_number")
+                                    else None
+                                ),
+                                refund_ids=(
+                                    [str(args.get("refund_id"))]
+                                    if args.get("refund_id")
+                                    else None
+                                ),
                             )
                             rep_id = rep_order.order_id if rep_order and rep_order.success else plan["remediation_id"]
                             st.resolve_dispute(dispute_id=disp_id, ai_evidence=ev_text, replacement_order_id=rep_id)
@@ -938,7 +955,7 @@ def ask_copilot(
                 answer=strip_emojis(fallback_text),
                 model_used="local-deterministic-fallback",
                 latency_ms=5.0,
-                tokens_per_sec=450.0,
+                tokens_per_sec=0.0,
                 executed_action=executed_action,
                 created_order=created_order,
                 created_invoice=created_invoice,
@@ -951,7 +968,7 @@ def ask_copilot(
         answer=strip_emojis(fallback_text),
         model_used="local-deterministic-fallback",
         latency_ms=2.0,
-        tokens_per_sec=480.0,
+        tokens_per_sec=0.0,
         executed_action=executed_action,
         created_order=created_order,
         created_invoice=created_invoice,
@@ -1049,7 +1066,7 @@ def diagnose_dispute_and_remediate(
             f"we have immediately deactivated the associated {raw_sku} license credentials (Security Audit ID: {remediation_id}) "
             f"and provided the complete transaction verification log to PayPal Resolution Center to resolve your claim."
         )
-    elif reason in ("SIGNIFICANTLY_NOT_AS_DESCRIBED", "DEFECTIVE_ITEM") or any(
+    elif reason == "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED" or any(
         k in desc_low for k in ("bug", "crash", "error", "broken", "doesn't work", "not working", "defect", "issue", "fail")
     ):
         remediation_id = f"DRAFT-PATCH-{hash_hex[:4]}-{hash_hex[4:8]}-{hash_hex[8:12]}"

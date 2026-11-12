@@ -15,7 +15,7 @@ def test_provider_auto_detection() -> None:
     s_groq = PulseSettings(groq_api_key="gsk_test")
     assert s_groq.active_ai_provider == "groq"
     assert s_groq.active_ai_base_url == "https://api.groq.com/openai/v1"
-    assert "llama" in s_groq.active_ai_model
+    assert "gpt-oss" in s_groq.active_ai_model
 
     # OpenAI
     s_openai = PulseSettings(openai_api_key="sk-proj-test")
@@ -195,4 +195,14 @@ def test_verify_connection_provider_isolation() -> None:
         # Groq active model must NOT be overwritten by Claude
         groq_model = get_active_groq_model(s_groq)
         assert "claude" not in groq_model
-        assert "llama" in groq_model
+        assert "gpt-oss" in groq_model
+
+
+def test_groq_models_are_current() -> None:
+    """Verify the default and fallback models are not on Groq's deprecation list."""
+    from pulse.ai_copilot import FALLBACK_MODELS
+
+    deprecated = {"llama-3.3-70b-versatile", "llama-3.1-8b-instant"}
+    assert not deprecated.intersection(FALLBACK_MODELS)
+    assert "openai/gpt-oss-120b" in FALLBACK_MODELS
+    assert PulseSettings().groq_model == "openai/gpt-oss-120b"

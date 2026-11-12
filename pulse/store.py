@@ -81,6 +81,10 @@ ZERO_DECIMAL_CURRENCIES = {"JPY", "HUF", "TWD"}
 # revenue or as a paid conversion.
 PAID_TRANSACTION_STATUSES = ("COMPLETED", "CAPTURED", "DISPUTED")
 PENDING_TRANSACTION_STATUSES = ("CREATED", "APPROVED", "PENDING")
+# Refunds and reversals carry negative amounts. Revenue sums include them so
+# net revenue is not inflated. Paid-order counts still use PAID only.
+REFUND_TRANSACTION_STATUSES = ("REFUNDED", "REVERSED")
+REVENUE_TRANSACTION_STATUSES = PAID_TRANSACTION_STATUSES + REFUND_TRANSACTION_STATUSES
 
 # PayPal dispute states that still need seller action. Exact matches on "OPEN"
 # miss every dispute that has moved to WAITING_FOR_SELLER_RESPONSE or
@@ -107,7 +111,13 @@ def format_currency_amount(amount: float, currency: str) -> str:
 
 
 def compute_paypal_fee(amount: float, currency: str, cross_border: bool = True) -> float:
-    """Calculate realistic PayPal micro-merchant fee (percentage + fixed fee + cross-border FX drag)."""
+    """Estimate PayPal's commercial fee for a received payment.
+
+    Percentage: 3.49% domestic plus 1.50% international (US commercial rate).
+    Fixed fee: PayPal's published commercial fixed fee for the received
+    currency. INR and CNY have no published commercial fixed fee; the nearest
+    published QR-code fee is used and is an estimate.
+    """
     cur = currency.upper()
     rate = 0.0349 + (0.015 if cross_border else 0.0)
     fixed_map = {
@@ -117,32 +127,31 @@ def compute_paypal_fee(amount: float, currency: str, cross_border: bool = True) 
         "GBP": 0.39,
         "CAD": 0.59,
         "AUD": 0.59,
-        "JPY": 40.00,
-        "SGD": 0.50,
-        "HKD": 2.35,
-        "NZD": 0.45,
-        "CHF": 0.55,
-        "SEK": 3.25,
-        "NOK": 2.80,
-        "DKK": 2.60,
-        "PLN": 1.35,
-        "CZK": 10.00,
-        "HUF": 90.00,
-        "ILS": 1.20,
-        "MXN": 4.00,
-        "BRL": 0.60,
+        "JPY": 49.00,
+        "SGD": 0.69,
+        "HKD": 3.79,
+        "NZD": 0.69,
+        "CHF": 0.49,
+        "SEK": 4.09,
+        "NOK": 3.90,
+        "DKK": 2.90,
+        "PLN": 1.89,
+        "CZK": 9.00,
+        "HUF": 149.00,
+        "ILS": 1.60,
+        "MXN": 9.00,
+        "BRL": 2.90,
         "MYR": 2.00,
-        "TWD": 10.00,
-        "THB": 11.00,
-        "INR": 3.00,
-        "CNY": 2.50,
+        "TWD": 14.00,
+        "THB": 15.00,
+        # Not in the published commercial fixed-fee table; QR-code estimate.
+        "INR": 30.00,
+        "CNY": 2.10,
     }
     fixed = fixed_map.get(cur, 0.49)
     if cur in ZERO_DECIMAL_CURRENCIES:
-        fee = float(round(amount * rate + fixed))
-        return min(fee, float(round(amount * 0.45)))
-    fee = round(amount * rate + fixed, 2)
-    return min(fee, round(amount * 0.45, 2))
+        return float(round(amount * rate + fixed))
+    return round(amount * rate + fixed, 2)
 
 
 def parse_release_version(custom_id: str | None, default: str = "v0.1.0") -> str:
@@ -703,15 +712,22 @@ class PulseStore:
         usd_fee: float,
         usd_net: float,
         day_date: str,
+        count_order: bool = True,
     ) -> None:
-        """Add one captured payment to the release and daily rollups."""
+        """Add one captured payment to the release and daily rollups.
+
+        ``count_order=False`` applies the revenue delta without incrementing
+        the paid-order count. Refunds and reversals use it so they reduce net
+        revenue without looking like new sales.
+        """
         self._ensure_release(conn, release_version)
+        inc = 1 if count_order else 0
         conn.execute(
-            """
+            f"""
             UPDATE releases
-            SET paid_conversions = paid_conversions + 1,
+            SET paid_conversions = paid_conversions + {inc},
                 conversion_rate = CASE
-                    WHEN installs > 0 THEN ROUND(((paid_conversions + 1) * 100.0) / installs, 2)
+                    WHEN installs > 0 THEN ROUND(((paid_conversions + {inc}) * 100.0) / installs, 2)
                     ELSE 0.0
                 END,
                 gross_usd = ROUND(gross_usd + ?, 2),
@@ -729,9 +745,9 @@ class PulseStore:
         ).fetchone()
         if row:
             conn.execute(
-                """
+                f"""
                 UPDATE daily_metrics
-                SET paid_orders = paid_orders + 1,
+                SET paid_orders = paid_orders + {inc},
                     gross_usd = ROUND(gross_usd + ?, 2),
                     fees_usd = ROUND(fees_usd + ?, 2),
                     net_usd = ROUND(net_usd + ?, 2)
@@ -741,10 +757,10 @@ class PulseStore:
             )
         else:
             conn.execute(
-                """
+                f"""
                 INSERT INTO daily_metrics (
                     day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
-                ) VALUES (?, 0, 1, ?, ?, ?, 0, ?)
+                ) VALUES (?, 0, {inc}, ?, ?, ?, 0, ?)
                 """,
                 (day, usd_gross, usd_fee, usd_net, release_version),
             )
@@ -1533,12 +1549,12 @@ class PulseStore:
                 for r in conn.execute(
                     """
                     SELECT release_version,
-                           COUNT(*) as paid_count,
+                           SUM(CASE WHEN UPPER(status) IN ('COMPLETED', 'CAPTURED', 'DISPUTED') THEN 1 ELSE 0 END) as paid_count,
                            ROUND(SUM(usd_gross), 2) as sum_gross,
                            ROUND(SUM(usd_fee), 2) as sum_fee,
                            ROUND(SUM(usd_net), 2) as sum_net
                     FROM transactions
-                    WHERE UPPER(status) IN ('COMPLETED', 'CAPTURED', 'DISPUTED')
+                    WHERE UPPER(status) IN ('COMPLETED', 'CAPTURED', 'DISPUTED', 'REFUNDED', 'REVERSED')
                     GROUP BY release_version
                     """
                 ).fetchall()
@@ -1640,11 +1656,11 @@ class PulseStore:
                                 "title": f"{tag} — {t_subj}" if t_subj else f"{tag} (Local Git Release)",
                                 "released_at": t_date,
                                 "git_commit": t_commit,
-                                "installs": max(t_paid, 1) if t_paid > 0 else 0,
-                                "active_users": max(t_paid, 1) if t_paid > 0 else 0,
-                                "trial_starts": max(t_paid, 1) if t_paid > 0 else 0,
+                                "installs": 0,
+                                "active_users": 0,
+                                "trial_starts": 0,
                                 "paid_conversions": t_paid,
-                                "conversion_rate": 100.0 if t_paid > 0 else 0.0,
+                                "conversion_rate": 0.0,
                                 "gross_usd": t_gross,
                                 "fees_usd": t_fees,
                                 "net_usd": t_net,
@@ -1915,12 +1931,16 @@ class PulseStore:
 
     def get_dashboard_summary(
         self,
-        api_latency_ms: float = 180.0,
-        api_connected: bool = True,
+        api_latency_ms: float = 0.0,
+        api_connected: bool = False,
     ) -> dict[str, Any]:
-        """Compute complete KPI summary for `pp pulse`, `pp ask`, and `pp tui`."""
+        """Compute complete KPI summary for `pp pulse`, `pp ask`, and `pp tui`.
+
+        Gateway telemetry defaults to disconnected. Callers that verified the
+        API must pass the measured latency and connection state.
+        """
         currencies = self.get_currency_breakdown(
-            statuses=PAID_TRANSACTION_STATUSES, since_days=30
+            statuses=REVENUE_TRANSACTION_STATUSES, since_days=30
         )
         pending_currencies = self.get_currency_breakdown(
             statuses=PENDING_TRANSACTION_STATUSES, since_days=30
@@ -1997,8 +2017,6 @@ class PulseStore:
             "net_margin_pct": net_margin_pct,
             "total_installs": total_installs,
             "active_users": active_users,
-            "total_customers": total_installs,
-            "active_customers": active_users,
             "total_orders": total_paid,
             "total_paid": total_paid,
             "total_pending_orders": total_pending_orders,
@@ -2025,10 +2043,10 @@ class PulseStore:
         total_orders: int,
         net_margin_pct: float,
         latest_release_disputes: int,
-        api_latency_ms: float = 180.0,
-        api_connected: bool = True,
+        api_latency_ms: float = 0.0,
+        api_connected: bool = False,
     ) -> dict[str, Any]:
-        """Compute live Merchant Health Index across 4 dimensional sub-scores."""
+        """Compute the local Merchant Health Index across four weighted sub-scores."""
         # 1. Risk & Dispute Health (0-100)
         dispute_ratio_pct = round((open_disputes_count / max(1, total_orders)) * 100, 2)
         if open_disputes_count == 0:
@@ -2441,16 +2459,28 @@ class PulseStore:
                 tx_id = tx_info.get("transaction_id", "")
                 if not tx_id:
                     continue
+                event_code = str(tx_info.get("transaction_event_code", "") or "").upper()
+                # Keep payments (T00) and reversals/refunds (T11). Skip fees,
+                # currency conversions, deposits, withdrawals, bonuses, and
+                # adjustments; those are not merchant sales.
+                if event_code.startswith(
+                    ("T01", "T02", "T03", "T04", "T05", "T06", "T08", "T09", "T10", "T12", "T13", "T14", "T15")
+                ):
+                    continue
                 amt_obj = tx_info.get("transaction_amount", {})
-                gross_amt = abs(float(amt_obj.get("value", 0.0) or 0.0))
-                if gross_amt <= 0:
+                # Preserve the sign. PayPal reports refunds as negative amounts;
+                # taking the absolute value turns them into extra revenue.
+                gross_amt = float(amt_obj.get("value", 0.0) or 0.0)
+                if gross_amt == 0:
                     continue
                 curr = str(amt_obj.get("currency_code", "USD")).upper()
                 fee_obj = tx_info.get("fee_amount", {})
-                if fee_obj and fee_obj.get("value"):
-                    fee_amt = abs(float(fee_obj.get("value", 0.0)))
+                raw_fee = float(fee_obj.get("value", 0.0) or 0.0) if fee_obj else 0.0
+                if raw_fee:
+                    fee_amt = abs(raw_fee) if gross_amt > 0 else -abs(raw_fee)
                 else:
-                    fee_amt = compute_paypal_fee(gross_amt, curr)
+                    base_fee = compute_paypal_fee(abs(gross_amt), curr)
+                    fee_amt = base_fee if gross_amt > 0 else -base_fee
                 net_amt = round(gross_amt - fee_amt, 2)
 
                 fx = FX_TO_USD.get(curr, 1.0)
@@ -2464,8 +2494,17 @@ class PulseStore:
                     or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 )
 
-                raw_status = str(tx_info.get("transaction_status", "S")).upper()
-                status = "COMPLETED" if raw_status in ("S", "SUCCESS", "COMPLETED") else "PENDING"
+                raw_status = str(tx_info.get("transaction_status", "")).upper()
+                if gross_amt < 0:
+                    status = "REFUNDED"
+                elif raw_status == "D":
+                    status = "DENIED"
+                elif raw_status == "V":
+                    status = "REVERSED"
+                elif raw_status in ("S", "SUCCESS", "COMPLETED"):
+                    status = "COMPLETED"
+                else:
+                    status = "PENDING"
 
                 payer_info = item.get("payer_info", {})
                 country = str(payer_info.get("country_code", "US") or "US").upper()
@@ -2497,7 +2536,9 @@ class PulseStore:
                 prod_name = item_name or f"{sku} ({rel_ver})"
 
                 existing = conn.execute(
-                    "SELECT id, status FROM transactions WHERE paypal_id = ?", (tx_id,)
+                    "SELECT id, status, release_version, usd_gross, usd_fee, usd_net, created_at "
+                    "FROM transactions WHERE paypal_id = ?",
+                    (tx_id,),
                 ).fetchone()
                 conn.execute(
                     """
@@ -2527,28 +2568,42 @@ class PulseStore:
                         status,
                     ),
                 )
-                was_paid = bool(existing) and str(
-                    existing["status"] or ""
-                ).upper() in PAID_TRANSACTION_STATUSES
+                prev_status = str(existing["status"] or "").upper() if existing else ""
+                was_paid = prev_status in PAID_TRANSACTION_STATUSES
+                was_refund = prev_status in ("REFUNDED", "REVERSED")
+                is_paid = status in PAID_TRANSACTION_STATUSES
+                is_refund = status in ("REFUNDED", "REVERSED")
+                day = str(created_at)[:10]
                 if not existing:
                     added += 1
-                    if status in PAID_TRANSACTION_STATUSES:
+                    if is_paid:
                         self._apply_paid_rollup(
-                            conn,
-                            rel_ver,
-                            usd_gross,
-                            usd_fee,
-                            usd_net,
-                            str(created_at)[:10],
+                            conn, rel_ver, usd_gross, usd_fee, usd_net, day
                         )
-                elif status in PAID_TRANSACTION_STATUSES and not was_paid:
+                    elif is_refund:
+                        self._apply_paid_rollup(
+                            conn, rel_ver, usd_gross, usd_fee, usd_net, day,
+                            count_order=False,
+                        )
+                elif is_paid and not was_paid:
+                    self._apply_paid_rollup(
+                        conn, rel_ver, usd_gross, usd_fee, usd_net, day
+                    )
+                elif was_paid and not is_paid:
+                    # The gateway reversed a payment we already counted.
                     self._apply_paid_rollup(
                         conn,
-                        rel_ver,
-                        usd_gross,
-                        usd_fee,
-                        usd_net,
-                        str(created_at)[:10],
+                        str(existing["release_version"] or rel_ver),
+                        -float(existing["usd_gross"] or 0.0),
+                        -float(existing["usd_fee"] or 0.0),
+                        -float(existing["usd_net"] or 0.0),
+                        str(existing["created_at"] or "")[:10],
+                        count_order=False,
+                    )
+                elif is_refund and not was_refund:
+                    self._apply_paid_rollup(
+                        conn, rel_ver, usd_gross, usd_fee, usd_net, day,
+                        count_order=False,
                     )
             conn.commit()
         return added

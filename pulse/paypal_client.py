@@ -965,12 +965,18 @@ class PayPalClient:
     def select_evidence_type_for_reason(reason: str) -> str:
         """Map PayPal dispute reason to the most appropriate PayPal evidence_type."""
         r_up = (reason or "").upper()
-        if r_up in ("DUPLICATE_TRANSACTION", "INCORRECT_AMOUNT", "CREDIT_NOT_PROCESSED"):
+        if r_up in (
+            "DUPLICATE_TRANSACTION",
+            "INCORRECT_AMOUNT",
+            "CREDIT_NOT_PROCESSED",
+            "CANCELED_RECURRING_BILLING",
+            "PAYMENT_BY_OTHER_MEANS",
+        ):
             return "PROOF_OF_REFUND"
-        if r_up == "CANCELED_RECURRING_BILLING":
-            return "PROOF_OF_REFUND"
-        if r_up in ("SIGNIFICANTLY_NOT_AS_DESCRIBED", "UNAUTHORISED", "OTHER"):
+        if r_up in ("UNAUTHORISED", "OTHER", "PROBLEM_WITH_REMITTANCE"):
             return "OTHER"
+        if r_up == "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED":
+            return "ITEM_DESCRIPTION"
         return "PROOF_OF_FULFILLMENT"
 
     def submit_dispute_resolution(
@@ -1007,53 +1013,55 @@ class PayPalClient:
             }
 
         dispute_api_status = "NOT_SENT"
-        evidence_type = self.select_evidence_type_for_reason(reason)
         notes_to_send = (buyer_message or evidence_text)[:1900]
         url = f"{self.settings.paypal_base_url}/v1/customer/disputes/{dispute_id}/provide-evidence"
 
-        # PayPal validates evidence_info per type. Sending notes alone is
-        # rejected, so require the structured fields before calling.
-        evidence: dict[str, Any] = {
-            "evidence_type": evidence_type,
-            "notes": notes_to_send,
-        }
-        if evidence_type == "PROOF_OF_FULFILLMENT":
-            if not tracking_info:
-                return {
-                    "ok": False,
-                    "dispute_id": dispute_id,
-                    "dispute_api_status": "BLOCKED_MISSING_EVIDENCE",
-                    "error": "PROOF_OF_FULFILLMENT requires tracking_info entries with carrier_name and tracking_number.",
-                }
-            evidence["evidence_info"] = {"tracking_info": tracking_info}
-        elif evidence_type == "PROOF_OF_REFUND":
-            if not refund_ids:
-                return {
-                    "ok": False,
-                    "dispute_id": dispute_id,
-                    "dispute_api_status": "BLOCKED_MISSING_EVIDENCE",
-                    "error": "PROOF_OF_REFUND requires refund_ids.",
-                }
-            evidence["evidence_info"] = {"refund_ids": refund_ids}
+        # Accepting the claim refunds the buyer through PayPal. Evidence is not
+        # required on this path, so do not block on missing tracking data.
+        accept_claim = resolution_strategy == "ACCEPT_AND_REFUND"
+        evidence_type = self.select_evidence_type_for_reason(reason)
 
         ok = False
         api_error = ""
-        try:
-            input_payload = json.dumps({"evidences": [evidence]})
-            resp = self._request_with_retry(
-                "POST",
-                url,
-                files={"input": (None, input_payload, "application/json")},
-            )
-            if resp.status_code in (200, 201, 202):
-                ok = True
-                dispute_api_status = f"SUBMITTED (HTTP {resp.status_code})"
-            else:
-                dispute_api_status = f"FAILED (HTTP {resp.status_code})"
-                api_error = resp.text[:400]
-        except Exception as exc:
-            dispute_api_status = f"ERROR ({exc})"
-            api_error = str(exc)
+        if not accept_claim:
+            evidence: dict[str, Any] = {
+                "evidence_type": evidence_type,
+                "notes": notes_to_send,
+            }
+            if evidence_type == "PROOF_OF_FULFILLMENT":
+                if tracking_info:
+                    evidence["evidence_info"] = {"tracking_info": tracking_info}
+                else:
+                    # Digital delivery has no carrier tracking. Use the item
+                    # description evidence type, which accepts notes alone.
+                    evidence_type = "ITEM_DESCRIPTION"
+                    evidence["evidence_type"] = evidence_type
+            elif evidence_type == "PROOF_OF_REFUND":
+                if not refund_ids:
+                    return {
+                        "ok": False,
+                        "dispute_id": dispute_id,
+                        "dispute_api_status": "BLOCKED_MISSING_EVIDENCE",
+                        "error": "PROOF_OF_REFUND requires refund_ids.",
+                    }
+                evidence["evidence_info"] = {"refund_ids": refund_ids}
+
+            try:
+                input_payload = json.dumps({"evidences": [evidence]})
+                resp = self._request_with_retry(
+                    "POST",
+                    url,
+                    files={"input": (None, input_payload, "application/json")},
+                )
+                if resp.status_code in (200, 201, 202):
+                    ok = True
+                    dispute_api_status = f"SUBMITTED (HTTP {resp.status_code})"
+                else:
+                    dispute_api_status = f"FAILED (HTTP {resp.status_code})"
+                    api_error = resp.text[:400]
+            except Exception as exc:
+                dispute_api_status = f"ERROR ({exc})"
+                api_error = str(exc)
 
         # Also dispatch a direct conversational reply if buyer_message is provided
         message_api_status = "SKIPPED"
@@ -1064,12 +1072,14 @@ class PayPalClient:
                 if not ok:
                     dispute_api_status = f"{dispute_api_status} + {message_api_status}"
 
-        if resolution_strategy == "ACCEPT_AND_REFUND":
+        if accept_claim:
             acc_res = self.accept_dispute_claim(dispute_id, note=notes_to_send)
-            if acc_res.get("ok") and not ok:
-                dispute_api_status = (
-                    f"{dispute_api_status} + CLAIM_REFUNDED (HTTP {acc_res.get('status_code')})"
-                )
+            if acc_res.get("ok"):
+                ok = True
+                dispute_api_status = f"CLAIM_REFUNDED (HTTP {acc_res.get('status_code')})"
+            else:
+                dispute_api_status = f"CLAIM_REFUND_FAILED (HTTP {acc_res.get('status_code')})"
+                api_error = str(acc_res.get("error", ""))
 
         if replacement_order is None:
             replacement_order = self.create_order(

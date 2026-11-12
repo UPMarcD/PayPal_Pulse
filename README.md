@@ -46,7 +46,7 @@ pp tui --demo
 ### 2. Live PayPal Sandbox Mode
 When you are ready to connect to your live PayPal Developer Sandbox:
 ```bash
-# Run the interactive setup wizard (saves verified credentials to ~/.pulse/config.json or .env)
+# Run the interactive setup wizard (saves verified credentials to ~/.pulse/config.json)
 pp setup
 
 # Or verify existing credentials
