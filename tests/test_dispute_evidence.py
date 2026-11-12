@@ -22,16 +22,16 @@ def _client() -> PayPalClient:
 
 
 def test_evidence_type_matches_paypal_reason_enum() -> None:
-    """Verify evidence types use the PayPal dispute reason enum values."""
+    """Verify evidence types match PayPal's documented dispute-reason table."""
     assert (
         PayPalClient.select_evidence_type_for_reason(
             "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED"
         )
-        == "ITEM_DESCRIPTION"
+        == "OTHER"
     )
     assert (
         PayPalClient.select_evidence_type_for_reason("DUPLICATE_TRANSACTION")
-        == "PROOF_OF_REFUND"
+        == "OTHER"
     )
     assert (
         PayPalClient.select_evidence_type_for_reason(
@@ -41,8 +41,8 @@ def test_evidence_type_matches_paypal_reason_enum() -> None:
     )
 
 
-def test_digital_fulfillment_uses_notes_without_tracking(monkeypatch) -> None:
-    """Verify a no-tracking dispute submits item description notes instead of blocking."""
+def test_notes_only_fulfillment_evidence(monkeypatch) -> None:
+    """Verify INR evidence submits notes without tracking instead of blocking."""
     client = _client()
     captured: list[dict[str, Any]] = []
 
@@ -67,7 +67,8 @@ def test_digital_fulfillment_uses_notes_without_tracking(monkeypatch) -> None:
     assert res["ok"] is True
     payload = json.loads(captured[0]["files"]["input"][1])
     evidence = payload["evidences"][0]
-    assert evidence["evidence_type"] == "ITEM_DESCRIPTION"
+    assert evidence["evidence_type"] == "PROOF_OF_FULFILLMENT"
+    assert evidence["notes"]
     assert "evidence_info" not in evidence
 
 

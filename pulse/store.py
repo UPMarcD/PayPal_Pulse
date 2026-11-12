@@ -165,9 +165,11 @@ def parse_release_version(custom_id: str | None, default: str = "v0.1.0") -> str
     # 1. Prefix format: "release:v1.3.0" or "release:v1.3.0|US|SKU"
     if text.lower().startswith("release:"):
         remainder = text[8:].strip()
-        ver = remainder.split("|")[0].split()[0].strip()
-        if ver:
-            return ver
+        first = remainder.split("|")[0].strip()
+        tokens = first.split()
+        if tokens:
+            return tokens[0]
+        return default
 
     # 2. JSON format: {"v": "v1.3.0"} or {"version": "v1.3.0"}
     if text.startswith("{") and text.endswith("}"):
@@ -280,7 +282,7 @@ def detect_project_context(cwd: Path | None = None) -> dict[str, Any]:
                 info["git_commit"] = proc_sha.stdout.strip()
 
             proc_tag = subprocess.run(
-                ["git", "describe", "--tags", "--always"],
+                ["git", "describe", "--tags", "--abbrev=0"],
                 cwd=str(target_dir),
                 capture_output=True,
                 text=True,
@@ -808,7 +810,7 @@ class PulseStore:
 
         with self._connect() as conn:
             existing = conn.execute(
-                "SELECT id FROM transactions WHERE paypal_id = ?",
+                "SELECT id, status FROM transactions WHERE paypal_id = ?",
                 (order.order_id,),
             ).fetchone()
             conn.execute(
@@ -821,7 +823,13 @@ class PulseStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(paypal_id) DO UPDATE SET
                     status = excluded.status,
-                    approve_url = excluded.approve_url
+                    approve_url = excluded.approve_url,
+                    gross_amount = excluded.gross_amount,
+                    fee_amount = excluded.fee_amount,
+                    net_amount = excluded.net_amount,
+                    usd_gross = excluded.usd_gross,
+                    usd_fee = excluded.usd_fee,
+                    usd_net = excluded.usd_net
                 """,
                 (
                     order.order_id,
@@ -931,6 +939,16 @@ class PulseStore:
                                 """,
                                 (today_str, usd_gross, usd_fee, usd_net, effective_release),
                             )
+            elif is_paid and str(existing["status"] or "").upper() not in PAID_TRANSACTION_STATUSES:
+                # A pending order became captured. Apply the revenue now.
+                self._apply_paid_rollup(
+                    conn,
+                    effective_release,
+                    usd_gross,
+                    usd_fee,
+                    usd_net,
+                    created_at[:10],
+                )
             conn.commit()
 
         return {
@@ -1041,9 +1059,21 @@ class PulseStore:
         default_cur = ctx.get("default_currency") or "USD"
 
         if event_type in ("PAYMENT.CAPTURE.COMPLETED", "CHECKOUT.ORDER.APPROVED"):
-            order_id = resource.get("id", f"ORD-WH-{int(time.time())}")
+            purchase_units = resource.get("purchase_units") or []
+            purchase_unit = purchase_units[0] if purchase_units else {}
+            related = (resource.get("supplementary_data") or {}).get("related_ids") or {}
+            order_id = (
+                related.get("order_id")
+                or resource.get("id")
+                or f"ORD-WH-{int(time.time())}"
+            )
             breakdown = resource.get("seller_receivable_breakdown") or {}
-            amount_dict = resource.get("amount") or resource.get("dispute_amount") or {}
+            amount_dict = (
+                resource.get("amount")
+                or (purchase_unit.get("amount") or {})
+                or resource.get("dispute_amount")
+                or {}
+            )
             if not amount_dict and breakdown:
                 amount_dict = breakdown.get("gross_amount", {})
             amt = float(amount_dict.get("value", ctx.get("default_price", 19.99)))
@@ -1060,7 +1090,7 @@ class PulseStore:
 
             fee_override = _breakdown_value("paypal_fee")
             net_override = _breakdown_value("net_amount")
-            raw_custom = resource.get("custom_id")
+            raw_custom = resource.get("custom_id") or purchase_unit.get("custom_id")
             release_ver = parse_release_version(raw_custom, default=default_rel)
             parts = str(raw_custom).split("|") if raw_custom else []
             country = parts[1] if len(parts) > 1 and parts[1] else "US"
@@ -2464,7 +2494,7 @@ class PulseStore:
                 # currency conversions, deposits, withdrawals, bonuses, and
                 # adjustments; those are not merchant sales.
                 if event_code.startswith(
-                    ("T01", "T02", "T03", "T04", "T05", "T06", "T08", "T09", "T10", "T12", "T13", "T14", "T15")
+                    ("T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08", "T09", "T10", "T12", "T13", "T14", "T15")
                 ):
                     continue
                 amt_obj = tx_info.get("transaction_amount", {})
@@ -2474,12 +2504,17 @@ class PulseStore:
                 if gross_amt == 0:
                     continue
                 curr = str(amt_obj.get("currency_code", "USD")).upper()
+                payer_info = item.get("payer_info", {})
+                country = str(payer_info.get("country_code", "US") or "US").upper()
                 fee_obj = tx_info.get("fee_amount", {})
                 raw_fee = float(fee_obj.get("value", 0.0) or 0.0) if fee_obj else 0.0
                 if raw_fee:
                     fee_amt = abs(raw_fee) if gross_amt > 0 else -abs(raw_fee)
                 else:
-                    base_fee = compute_paypal_fee(abs(gross_amt), curr)
+                    cross_border = country != "US" or curr != "USD"
+                    base_fee = compute_paypal_fee(
+                        abs(gross_amt), curr, cross_border=cross_border
+                    )
                     fee_amt = base_fee if gross_amt > 0 else -base_fee
                 net_amt = round(gross_amt - fee_amt, 2)
 
@@ -2495,19 +2530,16 @@ class PulseStore:
                 )
 
                 raw_status = str(tx_info.get("transaction_status", "")).upper()
-                if gross_amt < 0:
-                    status = "REFUNDED"
+                if raw_status == "V":
+                    status = "REVERSED"
                 elif raw_status == "D":
                     status = "DENIED"
-                elif raw_status == "V":
-                    status = "REVERSED"
+                elif gross_amt < 0:
+                    status = "REFUNDED"
                 elif raw_status in ("S", "SUCCESS", "COMPLETED"):
                     status = "COMPLETED"
                 else:
                     status = "PENDING"
-
-                payer_info = item.get("payer_info", {})
-                country = str(payer_info.get("country_code", "US") or "US").upper()
 
                 cart_info = item.get("cart_info", {})
                 item_details = cart_info.get("item_details") or []
@@ -2535,11 +2567,27 @@ class PulseStore:
                 country = custom_country or country
                 prod_name = item_name or f"{sku} ({rel_ver})"
 
+                # A capture's reporting row carries the order ID in
+                # paypal_reference_id. Match the local order row so the two
+                # engines do not count the same payment twice.
+                ref_id = str(tx_info.get("paypal_reference_id", "") or "").strip()
+                ref_type = str(tx_info.get("paypal_reference_id_type", "") or "").upper()
+                ledger_id = ref_id if ref_type == "ODR" and ref_id else tx_id
                 existing = conn.execute(
                     "SELECT id, status, release_version, usd_gross, usd_fee, usd_net, created_at "
                     "FROM transactions WHERE paypal_id = ?",
-                    (tx_id,),
+                    (ledger_id,),
                 ).fetchone()
+                is_refund = status in ("REFUNDED", "REVERSED")
+                # A same-ID reversal voids the original sale. Store zero so the
+                # row cannot keep the sale's positive amount.
+                void_existing = bool(existing) and is_refund
+                stored_gross = 0.0 if void_existing else gross_amt
+                stored_fee = 0.0 if void_existing else fee_amt
+                stored_net = 0.0 if void_existing else net_amt
+                stored_usd_gross = 0.0 if void_existing else usd_gross
+                stored_usd_fee = 0.0 if void_existing else usd_fee
+                stored_usd_net = 0.0 if void_existing else usd_net
                 conn.execute(
                     """
                     INSERT INTO transactions (
@@ -2549,18 +2597,24 @@ class PulseStore:
                         is_live_sandbox, approve_url
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '')
                     ON CONFLICT(paypal_id) DO UPDATE SET
-                        status = excluded.status
+                        status = excluded.status,
+                        gross_amount = excluded.gross_amount,
+                        fee_amount = excluded.fee_amount,
+                        net_amount = excluded.net_amount,
+                        usd_gross = excluded.usd_gross,
+                        usd_fee = excluded.usd_fee,
+                        usd_net = excluded.usd_net
                     """,
                     (
-                        tx_id,
+                        ledger_id,
                         created_at,
-                        gross_amt,
-                        fee_amt,
-                        net_amt,
+                        stored_gross,
+                        stored_fee,
+                        stored_net,
                         curr,
-                        usd_gross,
-                        usd_fee,
-                        usd_net,
+                        stored_usd_gross,
+                        stored_usd_fee,
+                        stored_usd_net,
                         rel_ver,
                         country,
                         prod_name,
@@ -2572,7 +2626,6 @@ class PulseStore:
                 was_paid = prev_status in PAID_TRANSACTION_STATUSES
                 was_refund = prev_status in ("REFUNDED", "REVERSED")
                 is_paid = status in PAID_TRANSACTION_STATUSES
-                is_refund = status in ("REFUNDED", "REVERSED")
                 day = str(created_at)[:10]
                 if not existing:
                     added += 1

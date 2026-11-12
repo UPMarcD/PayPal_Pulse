@@ -42,6 +42,34 @@ def test_trigger_payment_capture_completed(tmp_path: Path) -> None:
     assert summary_after["total_orders"] == before_orders + 1
 
 
+def test_trigger_order_approved_reads_purchase_units(tmp_path: Path) -> None:
+    """Verify CHECKOUT.ORDER.APPROVED reads amount and custom_id from purchase_units."""
+    store = PulseStore(db_path=tmp_path / "order_approved.db")
+    store.seed_telemetry()
+    before_orders = store.get_dashboard_summary()["total_orders"]
+
+    receipt = store.record_webhook_event(
+        {
+            "event_type": "CHECKOUT.ORDER.APPROVED",
+            "resource": {
+                "id": "ORD-APPROVED-1",
+                "status": "APPROVED",
+                "purchase_units": [
+                    {
+                        "amount": {"value": "49.99", "currency_code": "EUR"},
+                        "custom_id": "release:v1.3.0|US|PulseCore Pro",
+                    }
+                ],
+            },
+        }
+    )
+    assert receipt["gross"] == 49.99
+    assert receipt["currency"] == "EUR"
+    assert receipt["release_version"] == "v1.3.0"
+    # APPROVED is pending, not revenue.
+    assert store.get_dashboard_summary()["total_orders"] == before_orders
+
+
 def test_trigger_customer_dispute_created_and_resolved(tmp_path: Path) -> None:
     """Verify `pp trigger customer.dispute.created` increments disputes and decreases health index."""
     db_file = tmp_path / "test_trigger_disp.db"

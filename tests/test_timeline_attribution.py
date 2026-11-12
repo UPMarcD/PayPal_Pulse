@@ -35,6 +35,10 @@ def test_parse_release_version_patterns() -> None:
     assert parse_release_version("v2.1.0") == "v2.1.0"
     assert parse_release_version("v0.9.5-beta") == "v0.9.5-beta"
 
+    assert parse_release_version("release:", default="v0.1.0") == "v0.1.0"
+    assert parse_release_version("release:   ", default="v0.1.0") == "v0.1.0"
+    assert parse_release_version("release:|US|SKU", default="v0.1.0") == "v0.1.0"
+
     # Empty or None fallbacks
     assert parse_release_version(None, default="v0.1.0") == "v0.1.0"
     assert parse_release_version("", default="v0.1.0") == "v0.1.0"

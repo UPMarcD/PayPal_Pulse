@@ -385,6 +385,7 @@ class PayPalClient:
                     "start_date": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "end_date": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "fields": "all",
+                    "balance_affecting_records_only": "true",
                     "page_size": str(page_size),
                     "page": str(page),
                 }
@@ -963,21 +964,16 @@ class PayPalClient:
 
     @staticmethod
     def select_evidence_type_for_reason(reason: str) -> str:
-        """Map PayPal dispute reason to the most appropriate PayPal evidence_type."""
+        """Map a PayPal dispute reason to a documented evidence type.
+
+        PayPal's dispute-reasons reference allows OTHER with notes for every
+        reason. MERCHANDISE_OR_SERVICE_NOT_RECEIVED also accepts
+        PROOF_OF_FULFILLMENT, which can carry tracking data.
+        """
         r_up = (reason or "").upper()
-        if r_up in (
-            "DUPLICATE_TRANSACTION",
-            "INCORRECT_AMOUNT",
-            "CREDIT_NOT_PROCESSED",
-            "CANCELED_RECURRING_BILLING",
-            "PAYMENT_BY_OTHER_MEANS",
-        ):
-            return "PROOF_OF_REFUND"
-        if r_up in ("UNAUTHORISED", "OTHER", "PROBLEM_WITH_REMITTANCE"):
-            return "OTHER"
-        if r_up == "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED":
-            return "ITEM_DESCRIPTION"
-        return "PROOF_OF_FULFILLMENT"
+        if r_up == "MERCHANDISE_OR_SERVICE_NOT_RECEIVED":
+            return "PROOF_OF_FULFILLMENT"
+        return "OTHER"
 
     def submit_dispute_resolution(
         self,
@@ -1026,25 +1022,13 @@ class PayPalClient:
         if not accept_claim:
             evidence: dict[str, Any] = {
                 "evidence_type": evidence_type,
-                "notes": notes_to_send,
+                "notes": notes_to_send or "Evidence submitted by the merchant.",
             }
-            if evidence_type == "PROOF_OF_FULFILLMENT":
-                if tracking_info:
-                    evidence["evidence_info"] = {"tracking_info": tracking_info}
-                else:
-                    # Digital delivery has no carrier tracking. Use the item
-                    # description evidence type, which accepts notes alone.
-                    evidence_type = "ITEM_DESCRIPTION"
-                    evidence["evidence_type"] = evidence_type
-            elif evidence_type == "PROOF_OF_REFUND":
-                if not refund_ids:
-                    return {
-                        "ok": False,
-                        "dispute_id": dispute_id,
-                        "dispute_api_status": "BLOCKED_MISSING_EVIDENCE",
-                        "error": "PROOF_OF_REFUND requires refund_ids.",
-                    }
+            if refund_ids:
+                evidence["evidence_type"] = "PROOF_OF_REFUND"
                 evidence["evidence_info"] = {"refund_ids": refund_ids}
+            elif evidence_type == "PROOF_OF_FULFILLMENT" and tracking_info:
+                evidence["evidence_info"] = {"tracking_info": tracking_info}
 
             try:
                 input_payload = json.dumps({"evidences": [evidence]})

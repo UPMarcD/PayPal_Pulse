@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from pulse.cli import app
 from pulse.config import get_settings
-from pulse.paypal_client import PayPalClient
+from pulse.paypal_client import PayPalClient, PayPalOrderResult
 from pulse.store import PulseStore
 
 runner = CliRunner()
@@ -159,6 +159,116 @@ def test_sync_external_transactions_refund_and_denied(tmp_path: Path) -> None:
     # One paid order, fully refunded: revenue nets to zero.
     assert summary["total_orders"] == 1
     assert summary["total_gross_usd"] == 0.0
+
+
+def test_sync_same_id_reversal_voids_sale(tmp_path: Path) -> None:
+    """Verify a same-ID reversal cannot keep the original positive revenue."""
+    store = PulseStore(db_path=tmp_path / "same_id.db")
+
+    def row(tx_id: str, value: str, status: str, event: str) -> dict:
+        return {
+            "transaction_info": {
+                "transaction_id": tx_id,
+                "transaction_initiation_date": "2026-11-10T14:30:00Z",
+                "transaction_amount": {"currency_code": "USD", "value": value},
+                "fee_amount": {"currency_code": "USD", "value": "-4.99"},
+                "transaction_status": status,
+                "transaction_event_code": event,
+            },
+            "payer_info": {"country_code": "US"},
+        }
+
+    store.sync_external_transactions([row("PP-DUP-1", "100.00", "S", "T0006")])
+    store.sync_external_transactions([row("PP-DUP-1", "-100.00", "V", "T1106")])
+
+    txs = store.get_transactions()
+    assert len(txs) == 1
+    assert txs[0]["status"] == "REVERSED"
+    assert txs[0]["gross_amount"] == 0.0
+    assert store.get_dashboard_summary()["total_gross_usd"] == 0.0
+
+
+def test_sync_skips_credit_card_deposit(tmp_path: Path) -> None:
+    """Verify a T0700 credit card deposit is not recorded as merchant revenue."""
+    store = PulseStore(db_path=tmp_path / "deposit.db")
+    deposit = {
+        "transaction_info": {
+            "transaction_id": "PP-DEP-1",
+            "transaction_initiation_date": "2026-11-10T14:30:00Z",
+            "transaction_amount": {"currency_code": "USD", "value": "5000.00"},
+            "fee_amount": {"currency_code": "USD", "value": "0"},
+            "transaction_status": "S",
+            "transaction_event_code": "T0700",
+        },
+        "payer_info": {"country_code": "US"},
+    }
+    assert store.sync_external_transactions([deposit]) == 0
+    assert store.get_transactions() == []
+
+
+def test_sync_matches_local_order_by_reference_id(tmp_path: Path) -> None:
+    """Verify a reporting capture updates the local order instead of duplicating it."""
+    store = PulseStore(db_path=tmp_path / "ref_match.db")
+    order = PayPalOrderResult(
+        success=True,
+        order_id="ORD-1",
+        status="COMPLETED",
+        amount=100.00,
+        currency="USD",
+        description="Local order",
+    )
+    store.record_live_order(order)
+
+    reporting = {
+        "transaction_info": {
+            "transaction_id": "CAP-1",
+            "paypal_reference_id": "ORD-1",
+            "paypal_reference_id_type": "ODR",
+            "transaction_initiation_date": "2026-11-10T14:30:00Z",
+            "transaction_amount": {"currency_code": "USD", "value": "100.00"},
+            "fee_amount": {"currency_code": "USD", "value": "-4.99"},
+            "transaction_status": "S",
+            "transaction_event_code": "T0006",
+        },
+        "payer_info": {"country_code": "US"},
+    }
+    store.sync_external_transactions([reporting])
+
+    txs = store.get_transactions()
+    assert len(txs) == 1
+    assert txs[0]["paypal_id"] == "ORD-1"
+    summary = store.get_dashboard_summary()
+    assert summary["total_gross_usd"] == 100.0
+    assert summary["total_orders"] == 1
+
+
+def test_record_live_order_capture_applies_rollup(tmp_path: Path) -> None:
+    """Verify a pending order that later captures adds revenue once."""
+    store = PulseStore(db_path=tmp_path / "capture.db")
+    pending = PayPalOrderResult(
+        success=True,
+        order_id="ORD-CAP",
+        status="CREATED",
+        amount=50.00,
+        currency="USD",
+        description="Pending order",
+    )
+    store.record_live_order(pending)
+    assert store.get_dashboard_summary()["total_gross_usd"] == 0.0
+
+    captured = PayPalOrderResult(
+        success=True,
+        order_id="ORD-CAP",
+        status="COMPLETED",
+        amount=50.00,
+        currency="USD",
+        description="Captured order",
+    )
+    store.record_live_order(captured)
+
+    summary = store.get_dashboard_summary()
+    assert summary["total_gross_usd"] == 50.0
+    assert summary["total_orders"] == 1
 
 
 def test_sync_cli_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

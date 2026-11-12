@@ -130,7 +130,8 @@ def test_sqlite_dual_engine_store_isolated(tmp_path: Path) -> None:
     )
     store.record_live_order(dup_order, release_version="v1.2.1", country_code="DE")
     dup_v121 = next(r for r in store.get_releases(include_git_tags=False) if r["version"] == "v1.2.1")
-    assert dup_v121["paid_conversions"] == after_v121["paid_conversions"]
+    # The capture is counted once, when the pending order becomes paid.
+    assert dup_v121["paid_conversions"] == after_v121["paid_conversions"] + 1
 
     # Resolve 1 dispute and verify releases.dispute_count and status_badge synchronize
     resolved_ok = store.mark_dispute_resolved(

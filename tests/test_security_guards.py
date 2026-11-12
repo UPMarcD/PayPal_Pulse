@@ -377,7 +377,7 @@ def test_multi_problem_dispute_triage_and_enriched_sync(tmp_path):
     assert p_dup["problem_category"] == "Billing Reconciliation & Full Refund"
     assert p_dup["resolution_strategy"] == "ACCEPT_AND_REFUND"
     assert p_dup["remediation_id"].startswith("DRAFT-REFUND-")
-    assert PayPalClient.select_evidence_type_for_reason("DUPLICATE_TRANSACTION") == "PROOF_OF_REFUND"
+    assert PayPalClient.select_evidence_type_for_reason("DUPLICATE_TRANSACTION") == "OTHER"
 
     # 4. Subscription cancellation
     p_sub = diagnose_dispute_and_remediate(
