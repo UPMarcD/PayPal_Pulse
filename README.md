@@ -73,6 +73,11 @@ pp tui
 
 # Run Model Context Protocol (MCP) stdio server for Antigravity, Claude, & Cursor
 pp mcp
+
+# Record a shipped commit and inspect the delivery ledger
+pp deliver <commit_sha> --release v1.0.0 --channel github
+pp deliveries
+pp deliveries deliveries.jsonl
 ```
 
 On a machine with no ledger yet, `pp pulse` shows a first-run card with a short list of next steps. It never fabricates revenue figures.

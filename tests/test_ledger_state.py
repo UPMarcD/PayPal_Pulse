@@ -6,6 +6,7 @@ revenue. These tests pin the predicate that decides which one they see.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from pulse.config import PulseSettings
@@ -39,6 +40,7 @@ def test_empty_ledger_is_fresh(tmp_path) -> None:
     assert summary["total_gross_usd"] == 0.0
     assert summary["health_score"] == 0.0
     assert summary["health_rating"] == "NO DATA"
+    assert summary["health_telemetry"] == {}
 
 
 def test_seeded_ledger_is_sample(tmp_path) -> None:
@@ -63,6 +65,20 @@ def test_reset_clears_the_sample_marker(tmp_path) -> None:
     assert store.detect_state() == "fresh"
     store.record_live_order(_order("ORDER-2"))
     assert store.detect_state() == "connected"
+
+
+def test_ask_reports_no_data_instead_of_zero_analysis(tmp_path, monkeypatch) -> None:
+    """A fresh ledger must not be analysed as if $0.00 were a real result."""
+    from typer.testing import CliRunner
+
+    from pulse.cli import app
+
+    monkeypatch.setenv("PULSE_CACHE_DIR", str(tmp_path))
+    result = CliRunner().invoke(app, ["ask", "What is our net margin?", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "fresh"
+    assert "no orders" in payload["answer"].lower()
 
 
 def test_demo_database_still_auto_seeds(tmp_path) -> None:

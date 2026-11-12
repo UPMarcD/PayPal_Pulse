@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
+import re
 import sqlite3
 import subprocess
 import time
@@ -310,6 +312,84 @@ def detect_project_context(cwd: Path | None = None) -> dict[str, Any]:
     return info
 
 
+_TAG_ALLOWLIST = re.compile(r"^v?[0-9][0-9A-Za-z._-]*$")
+
+_DELIVERY_KEYS = {"commit_sha", "release_version", "channel", "note"}
+
+
+def recent_commits(tag: str, limit: int = 8) -> list[str]:
+    """Return up to `limit` commit subjects reachable from a release tag.
+
+    The tag is checked against an allowlist before it reaches git, so an
+    untrusted value cannot start another program. Every failure returns an
+    empty list, because missing history must never break evidence drafting.
+    """
+    tag = (tag or "").strip()
+    if not tag or not _TAG_ALLOWLIST.match(tag) or limit <= 0:
+        return []
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_CEILING_DIRECTORIES": str(Path.cwd().resolve().parent),
+    }
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--format=%s", "-n", str(limit), tag, "--"],
+            cwd=str(Path.cwd()),
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    subjects = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return subjects[:limit]
+
+
+def parse_delivery_jsonl(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Parse JSONL delivery records into valid records and per-line errors.
+
+    One record per line. Each record needs a commit_sha. Unknown keys are
+    rejected so a typo cannot silently drop a delivery.
+    """
+    records: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            errors.append(f"line {lineno}: invalid JSON ({exc.msg})")
+            continue
+        if not isinstance(obj, dict):
+            errors.append(f"line {lineno}: expected a JSON object")
+            continue
+        unknown = set(obj) - _DELIVERY_KEYS
+        if unknown:
+            errors.append(f"line {lineno}: unknown keys {sorted(unknown)}")
+            continue
+        sha = str(obj.get("commit_sha", "")).strip()
+        if not sha:
+            errors.append(f"line {lineno}: commit_sha is required")
+            continue
+        records.append(
+            {
+                "commit_sha": sha,
+                "release_version": str(obj.get("release_version", "") or ""),
+                "channel": str(obj.get("channel", "") or "unknown"),
+                "note": str(obj.get("note", "") or ""),
+            }
+        )
+    return records, errors
+
+
 class PulseStore:
     """SQLite telemetry & dual-engine ledger store."""
 
@@ -406,6 +486,16 @@ class PulseStore:
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    delivery_id TEXT UNIQUE NOT NULL,
+                    commit_sha TEXT NOT NULL,
+                    release_version TEXT NOT NULL DEFAULT '',
+                    channel TEXT NOT NULL DEFAULT 'unknown',
+                    note TEXT NOT NULL DEFAULT '',
+                    delivered_at TEXT NOT NULL
                 );
                 """
             )
@@ -509,6 +599,55 @@ class PulseStore:
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
             return row["value"] if row else default
+
+    def record_delivery(
+        self,
+        commit_sha: str,
+        release_version: str | None = None,
+        channel: str = "unknown",
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Record that a commit shipped to a release channel."""
+        sha = (commit_sha or "").strip()
+        if not sha:
+            raise ValueError("commit_sha is required")
+        delivery_id = f"DLV-{sha[:12].upper()}"
+        delivered_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        release = release_version or ""
+        chan = channel or "unknown"
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO deliveries (delivery_id, commit_sha, release_version, channel, note, delivered_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(delivery_id) DO UPDATE SET
+                    release_version = excluded.release_version,
+                    channel = excluded.channel,
+                    note = excluded.note,
+                    delivered_at = excluded.delivered_at
+                """,
+                (delivery_id, sha, release, chan, note or "", delivered_at),
+            )
+            conn.commit()
+        return {
+            "delivery_id": delivery_id,
+            "commit_sha": sha,
+            "release_version": release,
+            "channel": chan,
+            "note": note or "",
+            "delivered_at": delivered_at,
+        }
+
+    def get_deliveries(self, release_version: str | None = None) -> list[dict[str, Any]]:
+        """Return recorded deliveries, newest first."""
+        query = "SELECT * FROM deliveries"
+        params: tuple[Any, ...] = ()
+        if release_version:
+            query += " WHERE release_version = ?"
+            params = (release_version,)
+        query += " ORDER BY id DESC"
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
 
     def record_live_order(
         self,
@@ -1653,11 +1792,11 @@ class PulseStore:
         health_score = health_telemetry["composite_score"]
         health_rating = health_telemetry["rating"]
         if state == "fresh":
-            # A ledger with no rows has no measurable health. A score here would
-            # imply a baseline that does not exist.
+            # A ledger with no rows has no measurable health. Any score or
+            # sub-score here would imply a baseline that does not exist.
             health_score = 0.0
             health_rating = "NO DATA"
-            health_telemetry = {**health_telemetry, "composite_score": health_score, "rating": health_rating}
+            health_telemetry = {}
 
         return {
             "state": state,

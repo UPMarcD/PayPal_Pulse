@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from pulse.config import PulseSettings, get_settings
 from pulse.paypal_client import PayPalClient, PayPalInvoiceResult, PayPalOrderResult
-from pulse.store import PulseStore
+from pulse.store import PulseStore, recent_commits
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 FALLBACK_MODELS = [
@@ -1122,6 +1122,26 @@ def draft_dispute_evidence(
     clean_country = _sanitize_untrusted(dispute.get("buyer_country", "US"))
     clean_buyer_msg = _sanitize_untrusted(plan["buyer_message"])
 
+    release_tag = str(dispute.get("release_version", "") or "")
+    commit_lines = [
+        f"- {_sanitize_untrusted(line)[:160]}" for line in recent_commits(release_tag)
+    ]
+    commit_block = (
+        "\n".join(commit_lines)
+        if commit_lines
+        else "(no local commit history available for this tag)"
+    )
+    delivery_block = "(none recorded)"
+    try:
+        cfg_store = PulseStore(cfg.db_path, settings=cfg)
+        deliveries = cfg_store.get_deliveries(release_tag or None)
+        if deliveries:
+            delivery_block = "; ".join(
+                f"{d['delivery_id']} via {d['channel']}" for d in deliveries[:5]
+            )
+    except Exception:
+        pass
+
     prompt = (
         f"Draft a comprehensive, actionable PayPal Dispute Resolution & Evidence Dossier (under 220 words) that directly solves the customer's exact problem:\n"
         f"- Dispute ID: {dispute.get('dispute_id')} | Transaction ID: {dispute.get('paypal_transaction_id')}\n"
@@ -1131,6 +1151,8 @@ def draft_dispute_evidence(
         f"- PayPal Reason Code: <untrusted_buyer_claim>{clean_reason}</untrusted_buyer_claim>\n"
         f"- Buyer Inquiry / Complaint: <untrusted_buyer_claim>{clean_desc}</untrusted_buyer_claim>\n"
         f"- Triage Category: {plan['problem_category']} (Strategy: {plan['resolution_strategy']})\n"
+        f"- Commit History for Release {release_tag}:\n{commit_block}\n"
+        f"- Delivery Proof: {delivery_block}\n"
         f"- Concrete Remediation Executed: {plan['fix_applied']}\n"
         f"- Provisioned Credential / Reference ID: {plan['remediation_id']} (Sandbox Audit ID: {order_id_str})\n"
         f"- Direct Customer Message Dispatched: {clean_buyer_msg}\n\n"
@@ -1181,6 +1203,10 @@ def draft_dispute_evidence(
         f"   \"{clean_buyer_msg}\"\n"
         f"4. PayPal Audit Verification: Provisioned Ref {plan['remediation_id']} | Audit Order {order_id_str} for {masked_email}."
     )
+    if commit_lines:
+        fallback += "\n5. Verified Release Commits: " + "; ".join(commit_lines)
+    if delivery_block != "(none recorded)":
+        fallback += f"\n   Delivery Proof: {delivery_block}"
     return fallback, "local-template"
 
 

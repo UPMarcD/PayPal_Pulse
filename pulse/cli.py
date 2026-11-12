@@ -35,7 +35,7 @@ from pulse.constants import EX_CONFIG, EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILA
 from pulse import onboarding
 from pulse.mascot import format_mascot_header
 from pulse.paypal_client import PayPalClient
-from pulse.store import CURRENCY_SYMBOLS, PulseStore, detect_project_context, parse_release_version
+from pulse.store import CURRENCY_SYMBOLS, PulseStore, detect_project_context, parse_delivery_jsonl, parse_release_version
 
 # Ensure UTF-8 output on Windows consoles
 for _stream in (sys.stdout, sys.stderr):
@@ -1250,6 +1250,102 @@ def cmd_disputes(
         )
 
 
+@app.command("deliver")
+def cmd_deliver(
+    commit_sha: str = typer.Argument(..., metavar="COMMIT_SHA", help="Commit SHA or short SHA that shipped"),
+    release: Optional[str] = typer.Option(None, "--release", "-r", help="Release version this commit shipped in"),
+    channel: str = typer.Option("unknown", "--channel", "-c", help="Delivery channel (github, ci, manual, ...)"),
+    note: str = typer.Option("", "--note", "-n", help="Optional note"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+) -> None:
+    """Record that a commit shipped to a release channel."""
+    settings = get_settings()
+    store = PulseStore(settings.db_path, settings=settings)
+    record = store.record_delivery(commit_sha, release_version=release, channel=channel, note=note)
+    if json_output:
+        sys.stdout.write(json.dumps(record, indent=2) + "\n")
+        return
+    console.print(
+        Panel(
+            f"[bold green][OK] Delivery recorded[/bold green]\n"
+            f"  • [bold]Delivery ID:[/bold] `{record['delivery_id']}`\n"
+            f"  • [bold]Commit:[/bold] `{record['commit_sha']}`\n"
+            f"  • [bold]Release:[/bold] {record['release_version'] or 'unassigned'}\n"
+            f"  • [bold]Channel:[/bold] {record['channel']}\n"
+            f"  • [bold]Recorded At:[/bold] {record['delivered_at']}",
+            title="[bold #00a8ea]DELIVERY LEDGER[/bold #00a8ea]",
+            border_style="#0070ba",
+        )
+    )
+
+
+@app.command("deliveries")
+def cmd_deliveries(
+    import_path: Optional[Path] = typer.Argument(None, metavar="[FILE]", help="JSONL file of delivery records to import"),
+    release: Optional[str] = typer.Option(None, "--release", "-r", help="Filter by release version"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+) -> None:
+    """Import delivery records from a JSONL file, or list recorded deliveries."""
+    settings = get_settings()
+    store = PulseStore(settings.db_path, settings=settings)
+
+    if import_path is not None:
+        try:
+            text = import_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            console.print(f"[bold red]Cannot read file:[/bold red] {exc}")
+            raise typer.Exit(code=EX_CONFIG)
+        records, errors = parse_delivery_jsonl(text)
+        imported = [store.record_delivery(**record) for record in records]
+        if json_output:
+            sys.stdout.write(
+                json.dumps(
+                    {"ok": not errors, "imported": imported, "errors": errors},
+                    indent=2,
+                )
+                + "\n"
+            )
+            if errors:
+                raise typer.Exit(code=EX_USAGE)
+            return
+        for record in imported:
+            console.print(f"[bold green][OK][/bold green] {record['delivery_id']} <- `{record['commit_sha']}`")
+        for error in errors:
+            console.print(f"[bold red][X][/bold red] {error}")
+        if errors:
+            raise typer.Exit(code=EX_USAGE)
+        return
+
+    deliveries = store.get_deliveries(release)
+    if json_output:
+        sys.stdout.write(json.dumps(deliveries, indent=2) + "\n")
+        return
+    if not deliveries:
+        console.print(
+            Panel(
+                "[dim]No deliveries recorded yet. Run `pp deliver <commit_sha> --release v1.0.0`.[/dim]",
+                title="[bold #00a8ea]DELIVERY LEDGER[/bold #00a8ea]",
+                border_style="#0070ba",
+            )
+        )
+        return
+    table = Table(title="Delivery Ledger", box=box.ROUNDED, expand=True)
+    table.add_column("Delivery ID", style="bold cyan", no_wrap=True)
+    table.add_column("Commit", style="dim", no_wrap=True)
+    table.add_column("Release")
+    table.add_column("Channel")
+    table.add_column("Recorded At", no_wrap=True)
+    for d in deliveries:
+        table.add_row(
+            d["delivery_id"],
+            d["commit_sha"][:12],
+            d["release_version"] or "-",
+            d["channel"],
+            d["delivered_at"],
+        )
+    console.print(table)
+
+
 @app.command("ledger")
 def cmd_ledger(
     csv_output: bool = typer.Option(False, "--csv", help="Export transaction ledger as standard CSV"),
@@ -1640,6 +1736,32 @@ def cmd_ask(
     store = PulseStore(settings.db_path, settings=settings)
     if demo and store.should_auto_seed():
         store.seed_telemetry()
+
+    if store.detect_state() == "fresh":
+        if json_output:
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "state": "fresh",
+                        "db_path": str(settings.db_path),
+                        "next_actions": store.next_actions(),
+                        "answer": "Nothing to analyze yet. This ledger has no orders.",
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            return
+        console.print(
+            Panel(
+                "[bold #f0f6fc]Nothing to analyze yet.[/bold #f0f6fc]\n"
+                "This ledger has no orders. Run `pp setup`, then `pp order <amount> --release <tag>`.",
+                title="[bold #00a8ea]Pulse AI Copilot[/bold #00a8ea]",
+                border_style="#0070ba",
+            )
+        )
+        return
+
     pp_client = PayPalClient(settings)
 
     full_question = " ".join(question).strip()
