@@ -95,18 +95,46 @@ def save_global_config(
 
 
 def _load_env_files() -> Path | None:
-    """Load .env from current working directory or package root without overriding existing env vars."""
-    cwd_env = Path.cwd() / ".env"
-    root_env = PACKAGE_ROOT / ".env"
+    """Load .env from the current working directory only.
 
+    Reading stops at the working directory. An installed package must not import
+    credentials from its own source tree, and each project reads its own file.
+    """
+    cwd_env = Path.cwd() / ".env"
     if cwd_env.exists():
         load_dotenv(dotenv_path=cwd_env, override=False)
         return cwd_env
-    if root_env.exists():
-        load_dotenv(dotenv_path=root_env, override=False)
-        return root_env
-    load_dotenv(override=False)
     return None
+
+
+def _find_project_root(start: Path) -> Path | None:
+    """Return the nearest directory from start upward that holds .pulse.json or .git."""
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".pulse.json").exists() or (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def resolve_cache_dir(explicit: Path | None = None) -> Path:
+    """Resolve the ledger directory in one fixed order.
+
+    1. Explicit argument.
+    2. PULSE_CACHE_DIR environment variable.
+    3. Nearest ancestor of the working directory that holds .pulse.json or .git.
+    4. ~/.pulse/cache as a machine-wide fallback.
+
+    Every caller uses this function, so the order has exactly one implementation.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_dir = os.getenv("PULSE_CACHE_DIR", "").strip()
+    if env_dir:
+        return Path(env_dir)
+    root = _find_project_root(Path.cwd())
+    if root is not None:
+        return root / ".pulse_cache"
+    return GLOBAL_CONFIG_DIR / "cache"
 
 
 class PulseSettings(BaseModel):
@@ -128,7 +156,7 @@ class PulseSettings(BaseModel):
     ai_api_key: str = Field(default="")
     ai_model: str = Field(default="")
     groq_model: str = Field(default="llama-3.3-70b-versatile")
-    cache_dir: Path = Field(default=PACKAGE_ROOT / ".pulse_cache")
+    cache_dir: Path = Field(default_factory=resolve_cache_dir)
     custom_db_path: Path | None = Field(default=None, alias="db_path")
     env_path: Path | None = Field(default=None)
     demo_mode: bool = Field(default=False)
@@ -274,9 +302,7 @@ def get_settings(
     env_file = _load_env_files()
     global_cfg = _load_global_config()
 
-    resolved_cache = cache_dir or Path(
-        os.getenv("PULSE_CACHE_DIR", str(PACKAGE_ROOT / ".pulse_cache"))
-    )
+    resolved_cache = resolve_cache_dir(cache_dir)
 
     # Resolution hierarchy: os.environ -> local .env -> ~/.pulse/config.json
     def _resolve(key: str, default: str = "") -> str:
