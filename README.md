@@ -63,7 +63,7 @@ pp disputes
 pp disputes --resolve PP-D-90411-DE --yes
 
 # Simulate an inbound PayPal webhook into the local dual-engine ledger
-pp trigger --event payment.capture.completed
+pp trigger payment.capture.completed
 
 # Chat with Pulse AI Financial Copilot
 pp ask "What is our net margin after PayPal fees?"
@@ -152,6 +152,7 @@ PayPal Pulse exposes a native JSON-RPC Model Context Protocol (MCP) server over 
 | `pulse_get_timeline` | Correlate Git releases with revenue spikes and dispute surges. | `since` (str, opt) |
 | `pulse_create_order` | Mint a live PayPal Sandbox checkout order for software licenses. | `amount`, `currency` (req) |
 | `pulse_create_invoice` | Draft a live PayPal Sandbox invoice to bill a client. | `recipient_email`, `amount`, `currency` (req) |
+| `pulse_simulate_webhook` | Synthesize a PayPal webhook event into the ledger with release attribution. | `event_type`, `amount`, `currency`, `release_version`, `sku` (all opt) |
 
 ### Antigravity & Agent Configuration
 

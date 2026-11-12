@@ -493,7 +493,7 @@ MODEL CONTEXT PROTOCOL (MCP) INTEGRATION:
 - Running `pp mcp` (or `pp mcp --demo`) launches a standard stdio JSON-RPC MCP server.
 - Any AI agent (Claude Desktop, Cursor, Antigravity, Claude Code, Cline) can connect to PayPal Pulse by configuring:
   `{{"command": "pp", "args": ["mcp"]}}`
-- Tools exposed to external agents: `pulse_get_financial_summary`, `pulse_get_disputes`, `pulse_create_order`, `pulse_create_invoice`, `pulse_get_timeline`.
+- Tools exposed to external agents: `pulse_get_financial_summary`, `pulse_get_disputes`, `pulse_draft_dispute_evidence`, `pulse_get_timeline`, `pulse_create_order`, `pulse_create_invoice`, `pulse_simulate_webhook`.
 - NEVER confuse MCP with "Microsoft Cloud Platform" or "Microsoft Certified Professional". In this system and modern AI harnesses, MCP exclusively refers to Anthropic's Model Context Protocol.
 
 === GLOBAL KPIs (30-DAY ROLLING) ===
