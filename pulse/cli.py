@@ -15,10 +15,12 @@ from rich.columns import Columns
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 
 from pulse.ai_copilot import (
     ask_copilot,
+    diagnose_dispute_and_remediate,
     draft_dispute_evidence,
     get_active_groq_model,
     verify_groq_connection,
@@ -30,9 +32,10 @@ from pulse.config import (
     save_global_config,
 )
 from pulse.constants import EX_CONFIG, EX_GENERAL, EX_NOPERM, EX_OK, EX_UNAVAILABLE, EX_USAGE
+from pulse import onboarding
 from pulse.mascot import format_mascot_header
 from pulse.paypal_client import PayPalClient
-from pulse.store import PulseStore
+from pulse.store import CURRENCY_SYMBOLS, PulseStore, detect_project_context, parse_release_version
 
 # Ensure UTF-8 output on Windows consoles
 for _stream in (sys.stdout, sys.stderr):
@@ -44,12 +47,90 @@ for _stream in (sys.stdout, sys.stderr):
 
 console = Console()
 console_err = Console(stderr=True)
+
+
+# Enhance command signatures in `pp --help` so command arguments are visible
+def _patch_typer_commands_panel_with_args() -> None:
+    try:
+        from typer import rich_utils as _ru
+        import click
+
+        _orig_print_commands_panel = _ru._print_commands_panel
+
+        class _CommandProxy:
+            def __init__(self, cmd: click.Command) -> None:
+                self._cmd = cmd
+                clean_args: list[str] = []
+                for p in getattr(cmd, "params", []):
+                    if isinstance(p, click.Argument):
+                        mv = p.make_metavar()
+                        if p.name == "amount" and mv.startswith("[create]"):
+                            clean_args.append("AMOUNT")
+                        elif p.name in ("currency", "currency_opt") and mv == "[CURRENCY]":
+                            if "[CURRENCY]" not in clean_args:
+                                clean_args.append("[CURRENCY]")
+                        elif p.name in ("recipient_email", "recipient_opt") and mv == "[EMAIL]":
+                            if "[EMAIL]" not in clean_args:
+                                clean_args.append("[EMAIL]")
+                        else:
+                            clean_args.append(mv)
+                arg_str = (" " + " ".join(clean_args)) if clean_args else ""
+                self.name = f"{cmd.name or ''}{arg_str}"
+                self.short_help = cmd.short_help or cmd.help
+                self.help = cmd.help
+                self.deprecated = cmd.deprecated
+
+        def _patched_print_commands_panel(*, name, commands, markup_mode, console, cmd_len):
+            proxies = [_CommandProxy(c) for c in commands]
+            max_len = max([len(p.name) for p in proxies], default=cmd_len)
+            return _orig_print_commands_panel(
+                name=name,
+                commands=proxies,
+                markup_mode=markup_mode,
+                console=console,
+                cmd_len=max_len,
+            )
+
+        _ru._print_commands_panel = _patched_print_commands_panel
+    except Exception:
+        pass
+
+
+_patch_typer_commands_panel_with_args()
+
 app = typer.Typer(
     name="pp",
-    help="PayPal Pulse (pp) — Terminal-Native Financial Telemetry & Pulse AI for Indie Developers.",
+    help="PayPal Pulse (pp) — Terminal-Native Financial Telemetry & Pulse AI for Developers.",
     add_completion=False,
-    no_args_is_help=True,
+    invoke_without_command=True,
 )
+
+
+@app.callback()
+def _root(ctx: typer.Context) -> None:
+    """Show the first-run welcome when no credentials exist, otherwise show help."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if sys.stdin.isatty() and not get_settings(demo_mode=False).has_paypal_credentials:
+        onboarding.welcome(console, first_run=True)
+        choice = onboarding.select(
+            "What would you like to do?",
+            [
+                ("Explore demo mode (zero credentials needed)", "demo"),
+                ("Connect PayPal Sandbox credentials", "setup"),
+                ("Show available commands", "help"),
+            ],
+            default="demo",
+        )
+        if choice == "demo":
+            cmd_demo(tour=True, json_output=False)
+        elif choice == "setup":
+            run_setup_wizard()
+        else:
+            console.print(ctx.get_help())
+        raise typer.Exit()
+    console.print(ctx.get_help())
+    raise typer.Exit()
 
 
 def _sparkline(values: list[float]) -> str:
@@ -70,8 +151,25 @@ def cmd_auth(
     settings = get_settings()
     pp_client = PayPalClient(settings)
 
-    auth_res = pp_client.authenticate(force_refresh=refresh)
-    groq_res = verify_groq_connection(settings)
+    if not json_output and onboarding.should_animate():
+        with onboarding.LiveChecklist(console) as cl:
+            idx_pp = cl.start_step("PayPal OAuth2", "Authenticating against PayPal REST gateway...")
+            auth_res = pp_client.authenticate(force_refresh=refresh)
+            cl.finish_step(
+                idx_pp,
+                "ok" if auth_res.authenticated else "fail",
+                f"{auth_res.latency_ms:.0f} ms" if auth_res.authenticated else (auth_res.error or "Failed"),
+            )
+            idx_ai = cl.start_step("Pulse AI Engine", "Verifying inference endpoint...")
+            groq_res = verify_groq_connection(settings)
+            cl.finish_step(
+                idx_ai,
+                "ok" if groq_res.connected else "warn",
+                f"{groq_res.model} ({groq_res.latency_ms:.0f} ms)" if groq_res.connected else (groq_res.error or "Offline engine"),
+            )
+    else:
+        auth_res = pp_client.authenticate(force_refresh=refresh)
+        groq_res = verify_groq_connection(settings)
 
     if json_output:
         payload = {
@@ -117,9 +215,10 @@ def cmd_auth(
             f"{auth_res.latency_ms:.0f} ms",
         )
 
+    ai_provider_name = (getattr(groq_res, "provider", None) or settings.active_ai_provider or "AI").upper()
     if groq_res.connected:
         table.add_row(
-            "Pulse AI Engine (Financial Intelligence)",
+            f"Pulse AI Engine ({ai_provider_name})",
             "[bold green]● CONNECTED[/bold green]",
             (
                 f"Persona: [bold]Pulse[/bold] ({groq_res.available_models_count} inference endpoints online)\n"
@@ -129,7 +228,7 @@ def cmd_auth(
         )
     else:
         table.add_row(
-            "Pulse AI Engine (Financial Intelligence)",
+            f"Pulse AI Engine ({ai_provider_name})",
             "[bold red][DISCONNECTED][/bold red]",
             f"Error: {groq_res.error}",
             f"{groq_res.latency_ms:.0f} ms",
@@ -161,8 +260,21 @@ def cmd_seed(
 ) -> None:
     """Create real live Orders/Invoices on PayPal Sandbox and seed 30 days of software telemetry."""
     settings = get_settings(demo_mode=demo)
+
+    # Fail-safe guard: Never seed mock data on Live Production accounts
+    if settings.paypal_mode.lower() == "live" and not demo:
+        err_msg = (
+            "CRITICAL SECURITY GUARD: Seeding synthetic data on a Live/Production PayPal account is strictly prohibited.\n"
+            "To test synthetic releases, run with isolated demo mode: `pp seed --demo`"
+        )
+        if json_output:
+            sys.stderr.write(json.dumps({"error": err_msg, "code": EX_USAGE}, indent=2) + "\n")
+        else:
+            console_err.print(f"[bold red]CRITICAL SECURITY GUARD:[/bold red] {err_msg}")
+        raise typer.Exit(code=EX_USAGE)
+
     pp_client = PayPalClient(settings)
-    store = PulseStore(settings.db_path)
+    store = PulseStore(settings.db_path, settings=settings)
 
     if not json_output:
         console.print(
@@ -294,21 +406,162 @@ def cmd_seed(
         )
 
 
+@app.command("reset")
+def cmd_reset(
+    demo: bool = typer.Option(False, "--demo", help="Reset isolated demo database (.pulse_cache/demo.db)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Bypass confirmation prompt"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+) -> None:
+    """Reset the local dual-engine ledger to a pristine, unseeded state for production use."""
+    settings = get_settings(demo_mode=demo)
+    store = PulseStore(settings.db_path, settings=settings)
+
+    if not force and sys.stdin.isatty() and not json_output:
+        target_name = "DEMO database (.pulse_cache/demo.db)" if demo else "LIVE database (.pulse_cache/pulse.db)"
+        confirmed = typer.confirm(f"Reset {target_name} to a clean, empty state?", default=True)
+        if not confirmed:
+            console.print("[dim]Reset cancelled.[/dim]")
+            return
+
+    store.reset(mark_clean=True)
+
+    if json_output:
+        payload = {
+            "status": "ok",
+            "db_path": str(settings.db_path),
+            "demo": demo,
+            "clean_mode": True,
+            "message": "Database reset to pristine unseeded state. Auto-seeding disabled.",
+        }
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+        return
+
+    target_label = "Demo" if demo else "Live"
+    console.print(
+        Panel.fit(
+            f"[bold green][OK] {target_label} Database Reset Complete[/bold green]\n"
+            f"  • [bold]Target:[/bold] `{settings.db_path}`\n"
+            f"  • [bold]Status:[/bold] Clean empty state (0 releases, 0 transactions, 0 disputes)\n"
+            f"  • [bold]Auto-Seeding:[/bold] [yellow]Disabled (clean_mode=1)[/yellow]\n\n"
+            f"[dim]Real transactions created via `pp order` or captured through webhooks will populate this ledger without being overwritten.[/dim]\n"
+            f"[dim]To restore synthetic sample data at any time, run `pp seed{ ' --demo' if demo else '' }`.[/dim]",
+            title="[bold #00a8ea]LEDGER RESET[/bold #00a8ea]",
+            border_style="#0070ba",
+        )
+    )
+
+
+@app.command("sync")
+@app.command("refresh", hidden=True)
+def cmd_sync(
+    demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database (.pulse_cache/demo.db)"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON summary"),
+) -> None:
+    """Synchronize live customer disputes and transactions from PayPal Sandbox into local SQLite ledger."""
+    settings = get_settings(demo_mode=demo)
+    pp_client = PayPalClient(settings)
+    store = PulseStore(settings.db_path, settings=settings)
+
+    auth = pp_client.authenticate(force_refresh=True)
+    if not auth.authenticated:
+        if json_output:
+            sys.stdout.write(json.dumps({"ok": False, "error": auth.error or "Authentication failed"}) + "\n")
+        else:
+            console.print(
+                f"[bold red][ERROR] PayPal Authentication Failed:[/bold red] {auth.error}\n"
+                "[dim]Run [bold]pp setup[/bold] to configure credentials, or [bold]pp doctor[/bold] to diagnose.[/dim]"
+            )
+        raise typer.Exit(code=1)
+
+    if not json_output and onboarding.should_animate():
+        with onboarding.LiveChecklist(console) as cl:
+            idx_d = cl.start_step("Customer Disputes API", "Syncing GET /v1/customer/disputes...")
+            disp_res = pp_client.get_disputes()
+            disp_count = len(disp_res.get("items", [])) if disp_res.get("ok") else 0
+            disp_added = store.sync_external_disputes(disp_res.get("items", [])) if disp_res.get("ok") else 0
+            cl.finish_step(idx_d, "ok" if disp_res.get("ok") else "warn", f"{disp_added} synced ({disp_count} total)")
+
+            idx_t = cl.start_step("Reporting Transactions API", "Syncing GET /v1/reporting/transactions...")
+            tx_res = pp_client.get_transactions()
+            tx_count = len(tx_res.get("transaction_details", [])) if tx_res.get("ok") else 0
+            tx_added = store.sync_external_transactions(tx_res.get("transaction_details", [])) if tx_res.get("ok") else 0
+            cl.finish_step(idx_t, "ok" if tx_res.get("ok") else "warn", f"{tx_added} synced ({tx_count} total)")
+    else:
+        disp_res = pp_client.get_disputes()
+        disp_count = len(disp_res.get("items", [])) if disp_res.get("ok") else 0
+        disp_added = store.sync_external_disputes(disp_res.get("items", [])) if disp_res.get("ok") else 0
+
+        tx_res = pp_client.get_transactions()
+        tx_count = len(tx_res.get("transaction_details", [])) if tx_res.get("ok") else 0
+        tx_added = store.sync_external_transactions(tx_res.get("transaction_details", [])) if tx_res.get("ok") else 0
+
+    if json_output:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": True,
+                    "auth": auth.model_dump(),
+                    "disputes_synced": disp_added,
+                    "total_disputes": disp_count,
+                    "transactions_synced": tx_added,
+                    "total_transactions": tx_count,
+                    "reporting_api_ok": tx_res.get("ok", False),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        return
+
+    reporting_note = (
+        "[bold green]OK[/bold green]"
+        if tx_res.get("ok")
+        else "[yellow]403 Forbidden (Transaction Search permission required on PayPal portal)[/yellow]"
+    )
+    console.print(
+        Panel.fit(
+            f"[bold green][OK] PayPal Telemetry Synchronized[/bold green]\n"
+            f"  • [bold]Gateway Latency:[/bold] [cyan]{auth.latency_ms:.0f}ms[/cyan]\n"
+            f"  • [bold]Disputes Ingested:[/bold] [bold #f0f6fc]{disp_count}[/bold #f0f6fc] ({disp_added} newly stored / reconciled into SQLite)\n"
+            f"  • [bold]Transactions Synced:[/bold] [bold #f0f6fc]{tx_count}[/bold #f0f6fc] ({tx_added} newly stored)\n"
+            f"  • [bold]Reporting API Status:[/bold] {reporting_note}\n\n"
+            f"[dim]Run `pp pulse` to view the updated financial dashboard or `pp tui` (press 'r' anytime to refresh).[/dim]",
+            title="[bold #00a8ea]PAYPAL TELEMETRY SYNC[/bold #00a8ea]",
+            border_style="#0070ba",
+        )
+    )
+
+
 @app.command("pulse")
 @app.command("status", hidden=True)
 def cmd_pulse(
+    refresh: bool = typer.Option(False, "--refresh", "-r", help="Synchronize live disputes and transactions before rendering dashboard"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
     demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database (.pulse_cache/demo.db)"),
 ) -> None:
     """Display the rich full-terminal financial & customer telemetry dashboard."""
     settings = get_settings(demo_mode=demo)
     pp_client = PayPalClient(settings)
-    store = PulseStore(settings.db_path)
+    store = PulseStore(settings.db_path, settings=settings)
 
-    if not store.is_seeded():
+    if store.should_auto_seed():
         store.seed_telemetry()
 
     auth_res = pp_client.authenticate(force_refresh=False)
+    if refresh and auth_res.authenticated and not demo:
+        try:
+            disp_res = pp_client.get_disputes()
+            if disp_res.get("ok") and disp_res.get("items"):
+                store.sync_external_disputes(disp_res["items"])
+        except Exception:
+            pass
+        try:
+            tx_res = pp_client.get_transactions()
+            if tx_res.get("ok") and tx_res.get("transaction_details"):
+                store.sync_external_transactions(tx_res["transaction_details"])
+        except Exception:
+            pass
+
     balances_probe = pp_client.get_balances() if auth_res.authenticated else {"ok": False, "balances": []}
     lat_val = auth_res.latency_ms if auth_res.authenticated else 180.0
     summary = store.get_dashboard_summary(api_latency_ms=lat_val, api_connected=auth_res.authenticated)
@@ -331,16 +584,24 @@ def cmd_pulse(
         )
     else:
         conn_text = f"[bold yellow]● LOCAL TELEMETRY MODE[/bold yellow] | Reason: {auth_res.error}"
+        if not demo and not settings.has_paypal_credentials:
+            conn_text += "\n[dim]Showing local sample data. Run [bold]pp setup[/bold] to connect PayPal, or [bold]pp doctor[/bold] to check your setup.[/dim]"
 
     console.print(Panel(conn_text, title="[bold #00a8ea]PayPal Pulse (`pp pulse`) — Merchant Command Center[/bold #00a8ea]", border_style="#0070ba"))
 
     # 2. Active Dispute Alert Banner
     if summary["open_disputes_count"] > 0:
+        open_disputes = store.get_disputes(status_filter="OPEN")
+        first_disp = open_disputes[0] if open_disputes else {}
+        disp_rel = first_disp.get("release_version", "v1.2.1")
+        disp_country = first_disp.get("buyer_country", "US")
+        disp_sku = first_disp.get("platform_sku", "PulseCore Pro")
+        disp_id = first_disp.get("dispute_id", "PP-D-90411-DE")
         console.print(
             Panel(
-                f"[bold #f85149][ALERT] PROACTIVE DISPUTE ALERT:[/bold #f85149] [bold]{summary['open_disputes_count']} Open Customer Disputes[/bold] "
-                f"detected on release [bold #e5a824]v1.2.1 - EU Multi-Currency Tier[/bold #e5a824] (Region: [bold]Germany / DE[/bold], Platform: [bold]Ubuntu Linux 24.04 (CLI)[/bold]).\n"
-                f"Run [bold cyan]pp disputes[/bold cyan] to inspect or [bold cyan]pp disputes --resolve PP-D-90411-DE[/bold cyan] to auto-draft Pulse AI evidence & issue a Sandbox replacement order.",
+                f"[bold #f85149][ALERT] PROACTIVE DISPUTE ALERT:[/bold #f85149] [bold]{summary['open_disputes_count']} Open Customer Dispute(s)[/bold] "
+                f"detected on release [bold #e5a824]{disp_rel}[/bold #e5a824] (Region: [bold]{disp_country}[/bold], Platform: [bold]{disp_sku}[/bold]).\n"
+                f"Run [bold cyan]pp disputes[/bold cyan] to inspect or [bold cyan]pp disputes --resolve {disp_id}[/bold cyan] to auto-draft Pulse AI evidence & issue a Sandbox replacement order.",
                 border_style="#f85149",
             )
         )
@@ -368,7 +629,7 @@ def cmd_pulse(
         f"[bold white]Active Customers:[/bold white]   [bold]{active_cust:,}[/bold] (Total: {cust_count:,})\n"
         f"[bold white]Paid Orders:[/bold white]        [bold]{paid_orders:,}[/bold] ([bold cyan]{summary['overall_conversion_pct']}%[/bold cyan] Paid Conv %)\n"
         f"[bold white]Recurring MRR:[/bold white]      [bold green]${summary['mrr_usd']:,.2f} / mo[/bold green]\n"
-        f"[bold white]CFO Health Index:[/bold white]   [{rating_color}]{score_val} / 100 [{rating_str}][/{rating_color}]",
+        f"[bold white]Merchant Health Index:[/bold white] [{rating_color}]{score_val} / 100 [{rating_str}][/{rating_color}]",
         title="[bold #00a8ea]Customer & Sales Metrics[/bold #00a8ea]",
         border_style="#00a8ea",
         expand=True,
@@ -390,9 +651,8 @@ def cmd_pulse(
     cur_table.add_column("Net Margin %", justify="right", style="cyan")
     cur_table.add_column("USD Equiv Net", justify="right", style="bold green")
 
-    sym_map = {"USD": "$", "EUR": "€", "PHP": "₱", "GBP": "£"}
     for c in summary["currencies"]:
-        sym = sym_map.get(c["currency"], "")
+        sym = CURRENCY_SYMBOLS.get(c["currency"], f"{c['currency']} ")
         cur_table.add_row(
             c["currency"],
             str(c["tx_count"]),
@@ -464,6 +724,142 @@ def cmd_pulse(
         console.print(lo_table)
 
 
+@app.command("init")
+def cmd_init(
+    project_name: Optional[str] = typer.Option(None, "--name", "-n", help="Project name (defaults to package manifest or folder name)"),
+    release_version: Optional[str] = typer.Option(None, "--version", "-v", help="Initial release version (e.g. v1.0.0)"),
+    currency: Optional[str] = typer.Option(None, "--currency", "-c", help="Default project billing currency (e.g. USD, EUR, PHP, GBP, JPY, CAD)"),
+    sku: Optional[str] = typer.Option(None, "--sku", "-s", help="Default product SKU or license tier name"),
+    price: Optional[float] = typer.Option(None, "--price", "-p", help="Default checkout price for snippets and triggers"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing .pulse.json configuration"),
+    json_output: bool = typer.Option(False, "--json", help="Output project configuration and integration snippet as JSON"),
+) -> None:
+    """Initialize PayPal Pulse in your project: creates .pulse.json and outputs PayPal checkout integration snippets."""
+    cwd = Path.cwd()
+    config_path = cwd / ".pulse.json"
+
+    if config_path.exists() and not force:
+        try:
+            cfg_data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            cfg_data = {}
+        if json_output:
+            sys.stdout.write(
+                json.dumps(
+                    {"status": "ALREADY_INITIALIZED", "config_path": str(config_path), "config": cfg_data},
+                    indent=2,
+                )
+                + "\n"
+            )
+            return
+        console.print(
+            f"[bold yellow]Project already initialized:[/bold yellow] Found `{config_path}`\n"
+            f"[dim]Use `--force` to reinitialize or overwrite.[/dim]"
+        )
+        return
+
+    ctx = detect_project_context(cwd)
+    p_name = project_name or ctx.get("project_name") or cwd.name
+    p_ver = release_version or ctx.get("version") or "v1.0.0"
+    p_cur = (currency or ctx.get("default_currency") or "USD").strip().upper()
+    p_sku = (sku or (f"{p_name} Pro" if project_name else ctx.get("default_sku")) or f"{p_name} Pro").strip()
+    p_price = float(price if price is not None else ctx.get("default_price", 29.99))
+
+    cfg_payload = {
+        "project_name": p_name,
+        "version": p_ver,
+        "default_currency": p_cur,
+        "default_sku": p_sku,
+        "default_price": p_price,
+        "git_repo": ctx.get("git_repo", False),
+        "git_branch": ctx.get("git_branch"),
+        "git_commit": ctx.get("git_commit"),
+        "git_tag": ctx.get("git_tag"),
+        "package_type": ctx.get("package_type"),
+        "release_tag_strategy": "git_tag",
+        "custom_id_format": "release:{version}",
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    config_path.write_text(json.dumps(cfg_payload, indent=2) + "\n", encoding="utf-8")
+
+    from pulse.store import format_currency_amount
+
+    formatted_price = format_currency_amount(p_price, p_cur)
+    integration_code = {
+        "python": (
+            "# When creating orders via PayPal Orders v2 API:\n"
+            "order_payload = {\n"
+            '    "intent": "CAPTURE",\n'
+            '    "purchase_units": [{\n'
+            f'        "amount": {{"currency_code": "{p_cur}", "value": "{formatted_price}"}},\n'
+            f'        "custom_id": f"release:{{{p_ver!r}}}",  # PayPal Pulse attributes revenue to this release!\n'
+            f'        "description": "{p_sku} License",\n'
+            '    }]\n'
+            '}'
+        ),
+        "nodejs": (
+            "// In your Next.js / Express checkout route:\n"
+            "const orderPayload = {\n"
+            '  intent: "CAPTURE",\n'
+            '  purchase_units: [{\n'
+            f'    amount: {{ currency_code: "{p_cur}", value: "{formatted_price}" }},\n'
+            f'    custom_id: `release:${{process.env.APP_VERSION || {p_ver!r}}}`,\n'
+            f'    description: "{p_sku} License"\n'
+            '  }]\n'
+            '};'
+        ),
+        "curl": (
+            "curl -v -X POST https://api-m.sandbox.paypal.com/v2/checkout/orders \\\n"
+            '  -H "Content-Type: application/json" \\\n'
+            '  -H "Authorization: Bearer <ACCESS_TOKEN>" \\\n'
+            f'  -d \'{{"intent":"CAPTURE","purchase_units":[{{"amount":{{"currency_code":"{p_cur}","value":"{formatted_price}"}},"custom_id":"release:{p_ver}"}}]}}\''
+        ),
+    }
+
+    if json_output:
+        out = {
+            "status": "INITIALIZED",
+            "config_path": str(config_path),
+            "config": cfg_payload,
+            "integration_snippets": integration_code,
+        }
+        sys.stdout.write(json.dumps(out, indent=2) + "\n")
+        return
+
+    console.print(
+        Panel.fit(
+            f"[bold #00a8ea]PayPal Pulse (`pp init`) — Project Successfully Initialized[/bold #00a8ea]\n"
+            f"[dim]Saved configuration to {config_path}[/dim]",
+            border_style="#0070ba",
+        )
+    )
+
+    tbl = Table(title="Project Telemetry Metadata", box=box.ROUNDED, expand=True)
+    tbl.add_column("Field", style="bold cyan")
+    tbl.add_column("Detected Value", style="white")
+    tbl.add_row("Project Name", p_name)
+    tbl.add_row("Release Version", f"[bold yellow]{p_ver}[/bold yellow]")
+    tbl.add_row("Default Currency", f"[bold green]{p_cur}[/bold green] (Default Price: {p_price:.2f} {p_cur})")
+    tbl.add_row("Default Product SKU", p_sku)
+    tbl.add_row("Git Repository", "[green]Yes[/green]" if ctx.get("git_repo") else "[dim]No (standalone folder)[/dim]")
+    if ctx.get("git_branch"):
+        tbl.add_row("Git Branch", ctx["git_branch"])
+    if ctx.get("git_commit"):
+        tbl.add_row("Git Commit", ctx["git_commit"])
+    if ctx.get("git_tag"):
+        tbl.add_row("Git Tag", ctx["git_tag"])
+    if ctx.get("package_type"):
+        tbl.add_row("Package Stack", ctx["package_type"])
+    tbl.add_row("Custom ID Format", "release:{version}")
+    console.print(tbl)
+
+    console.print("\n[bold #3fb950]How to tag your PayPal checkout orders to this release:[/bold #3fb950]")
+    console.print("[dim]Pass your release version into `purchase_units[0].custom_id` when calling PayPal Orders v2:[/dim]\n")
+    console.print(Panel(Markdown(f"```python\n{integration_code['python']}\n```"), title="Python Integration", border_style="cyan"))
+    console.print(Panel(Markdown(f"```typescript\n{integration_code['nodejs']}\n```"), title="Node.js / Next.js Integration", border_style="cyan"))
+
+
 @app.command("timeline")
 @app.command("releases", hidden=True)
 def cmd_timeline(
@@ -473,8 +869,8 @@ def cmd_timeline(
 ) -> None:
     """Correlate Git releases (v1.1.0, v1.2.0, v1.2.1) with PayPal revenue, conversion rate, and dispute spikes."""
     settings = get_settings(demo_mode=demo)
-    store = PulseStore(settings.db_path)
-    if not store.is_seeded():
+    store = PulseStore(settings.db_path, settings=settings)
+    if store.should_auto_seed():
         store.seed_telemetry()
 
     releases = store.get_releases(include_git_tags=True)
@@ -485,9 +881,15 @@ def cmd_timeline(
         sys.stdout.write(json.dumps(releases, indent=2) + "\n")
         return
 
+    ctx = detect_project_context()
+    proj_info = f"  [dim]Project:[/dim] [bold white]{ctx.get('project_name', 'Default')}[/bold white] [dim]({ctx.get('version', 'v0.1.0')})[/dim]"
+    if ctx.get("git_tag"):
+        proj_info += f"  [dim]│ Git Tag:[/dim] [bold cyan]{ctx['git_tag']}[/bold cyan]"
+
     console.print(
         Panel.fit(
-            "[bold #00a8ea]PayPal Pulse (`pp timeline`) — Release-to-Revenue Correlation Engine[/bold #00a8ea]",
+            f"[bold #00a8ea]PayPal Pulse (`pp timeline`) — Release-to-Revenue Correlation Engine[/bold #00a8ea]\n"
+            f"{proj_info}",
             border_style="#0070ba",
         )
     )
@@ -509,9 +911,17 @@ def cmd_timeline(
     tl_table.add_column("Disputes", justify="right")
     tl_table.add_column("Telemetry Status", no_wrap=True)
 
+    open_disputes_list = store.get_disputes(status_filter="OPEN")
+    disp_country_by_rel: dict[str, str] = {}
+    for d in open_disputes_list:
+        rv = d.get("release_version", "")
+        if rv and rv not in disp_country_by_rel:
+            disp_country_by_rel[rv] = d.get("buyer_country", "US")
+
     for r in releases:
+        d_country = disp_country_by_rel.get(r["version"], "DE" if r["version"] == "v1.2.1" else "US")
         disp_str = (
-            f"[bold red]{r['dispute_count']} (DE)[/bold red]"
+            f"[bold red]{r['dispute_count']} ({d_country})[/bold red]"
             if int(r["dispute_count"]) > 0
             else "[green]0[/green]"
         )
@@ -588,9 +998,9 @@ def cmd_disputes(
     """List active customer disputes or auto-resolve a dispute via Pulse AI and PayPal Sandbox."""
     settings = get_settings(demo_mode=demo)
     pp_client = PayPalClient(settings)
-    store = PulseStore(settings.db_path)
+    store = PulseStore(settings.db_path, settings=settings)
 
-    if not store.is_seeded():
+    if store.should_auto_seed():
         store.seed_telemetry()
 
     if resolve:
@@ -609,25 +1019,45 @@ def cmd_disputes(
                 console_err.print("[yellow]Resolution aborted by user.[/yellow]")
                 raise typer.Exit(code=0)
 
+        if not demo and settings.has_paypal_credentials:
+            det_res = pp_client.get_dispute_details(dispute_id)
+            if det_res.get("ok") and det_res.get("dispute"):
+                store.sync_external_disputes([det_res["dispute"]])
+                refreshed = store.get_dispute_by_id(dispute_id)
+                if refreshed:
+                    dispute = refreshed
+
         sku_val = dispute.get("platform_sku", dispute.get("device_model", "Ubuntu Linux CLI"))
 
-        # 1. Execute live PayPal Sandbox action
-        sandbox_res = pp_client.submit_dispute_resolution(
-            dispute_id=dispute_id,
-            evidence_text=f"Hotfix v1.2.2 deployed for {sku_val}",
-            amount=float(dispute["amount"]),
-            currency=dispute["currency"],
+        # 1. Mint live PayPal Sandbox remediation entitlement reference
+        rep_order = pp_client.create_order(
+            amount=float(dispute.get("amount", 9.99)),
+            currency=dispute.get("currency", "USD"),
+            description=f"Dispute {dispute_id} Remediation Entitlement ({sku_val})",
+            custom_id=f"RESOLVE|{dispute_id}",
         )
-        rep_order = sandbox_res["replacement_order"]
 
-        # 2. Draft formal dispute evidence via Pulse AI
+        # 2. Triage buyer problem and draft tailored resolution + evidence package via Pulse AI
+        plan = diagnose_dispute_and_remediate(dispute, rep_order)
         evidence_text, model_used = draft_dispute_evidence(
             dispute=dispute,
             replacement_order=rep_order,
             settings=settings,
         )
 
-        order_id_str = rep_order.order_id if rep_order.success else "PP-LOCAL-RESOLVE"
+        # 3. Transmit multi-channel resolution (evidence + direct buyer message + claim/offer)
+        sandbox_res = pp_client.submit_dispute_resolution(
+            dispute_id=dispute_id,
+            evidence_text=evidence_text,
+            amount=float(dispute["amount"]),
+            currency=dispute["currency"],
+            reason=str(dispute.get("reason", "MERCHANDISE_OR_SERVICE_NOT_RECEIVED")),
+            buyer_message=plan["buyer_message"],
+            resolution_strategy=plan["resolution_strategy"],
+            replacement_order=rep_order,
+        )
+
+        order_id_str = rep_order.order_id if rep_order.success else plan["remediation_id"]
         if rep_order.success:
             store.record_live_order(
                 rep_order,
@@ -635,14 +1065,25 @@ def cmd_disputes(
                 country_code=dispute["buyer_country"],
                 platform_sku=sku_val,
             )
-        store.mark_dispute_resolved(dispute_id, evidence_text, order_id_str)
+        updated_status = sandbox_res.get("updated_status") or "UNDER_REVIEW"
+        store.mark_dispute_resolved(
+            dispute_id,
+            evidence_text,
+            order_id_str,
+            new_status=updated_status,
+        )
 
         if json_output:
             out_res = {
                 "dispute_id": dispute_id,
-                "status": "RESOLVED",
+                "status": updated_status,
+                "officially_resolved": updated_status.upper() in ("RESOLVED", "CLOSED"),
+                "problem_category": plan["problem_category"],
+                "resolution_strategy": plan["resolution_strategy"],
+                "remediation_id": plan["remediation_id"],
                 "paypal_dispute_api_status": sandbox_res["dispute_api_status"],
                 "replacement_order_id": order_id_str,
+                "buyer_message": plan["buyer_message"],
                 "evidence_draft": evidence_text,
             }
             sys.stdout.write(json.dumps(out_res, indent=2) + "\n")
@@ -650,23 +1091,26 @@ def cmd_disputes(
 
         console.print(
             Panel.fit(
-                f"[bold yellow]Resolving Dispute `{dispute_id}` via Pulse AI + Live PayPal Sandbox...[/bold yellow]",
+                f"[bold yellow]Submitting Remediation for Dispute `{dispute_id}` ({plan['problem_category']}) via Pulse AI + PayPal Sandbox...[/bold yellow]",
                 border_style="yellow",
             )
         )
         console.print(
             Panel(
                 Markdown(evidence_text),
-                title="[bold green]● Pulse Evidence Package Drafted[/bold green]",
+                title="[bold green]● Pulse Evidence & Customer Remediation Package[/bold green]",
                 border_style="green",
             )
         )
+        status_style = "bold green" if updated_status.upper() in ("RESOLVED", "CLOSED") else "bold cyan"
         console.print(
             Panel(
-                f"• [bold]Dispute ID:[/bold] `{dispute_id}` -> [bold green]RESOLVED[/bold green]\n"
+                f"• [bold]Dispute ID:[/bold] `{dispute_id}` -> [{status_style}]{updated_status}[/{status_style}] (Evidence Transmitted)\n"
+                f"• [bold]Triage Strategy:[/bold] `{plan['problem_category']}` (`{plan['resolution_strategy']}`)\n"
+                f"• [bold]Provisioned Credential / Ref ID:[/bold] [bold green]{plan['remediation_id']}[/bold green]\n"
                 f"• [bold]PayPal Disputes API Status:[/bold] `{sandbox_res['dispute_api_status']}`\n"
-                f"• [bold]Live Sandbox Replacement Order ID:[/bold] [bold cyan]{order_id_str}[/bold cyan]\n"
-                f"• [bold]Replacement Approval URL:[/bold] {rep_order.approve_url if rep_order.success else 'N/A'}",
+                f"• [bold]Live Sandbox Remediation Order ID:[/bold] [bold cyan]{order_id_str}[/bold cyan]\n"
+                f"• [bold]Adjudication Notice:[/bold] [dim]Dispute remains open on PayPal until buyer or PayPal confirms resolution.[/dim]",
                 title="[bold #00a8ea]PayPal Sandbox Resolution Execution[/bold #00a8ea]",
                 border_style="#0070ba",
             )
@@ -676,9 +1120,11 @@ def cmd_disputes(
     # List disputes
     auth_res = pp_client.authenticate(force_refresh=False)
     live_disp_probe = pp_client.get_disputes() if auth_res.authenticated else {"ok": False, "items": []}
+    if live_disp_probe.get("ok") and live_disp_probe.get("items"):
+        store.sync_external_disputes(live_disp_probe["items"])
     disputes = store.get_disputes()
     if only_open:
-        disputes = [d for d in disputes if d.get("status") == "OPEN"]
+        disputes = [d for d in disputes if str(d.get("status", "")).upper() not in ("RESOLVED", "CLOSED", "CANCELLED")]
 
     if json_output:
         sys.stdout.write(json.dumps(disputes, indent=2) + "\n")
@@ -699,11 +1145,18 @@ def cmd_disputes(
     table.add_column("Buyer Claim & Root Cause", style="dim")
 
     for d in disputes:
-        st_badge = (
-            "[bold red]OPEN[/bold red]"
-            if d["status"] == "OPEN"
-            else f"[bold green]{d['status']}[/bold green] ({d['resolution_order_id']})"
-        )
+        st_val = str(d["status"]).upper()
+        if st_val in ("RESOLVED", "CLOSED"):
+            st_badge = f"[bold green]{st_val}[/bold green]"
+        elif st_val in ("WAITING_FOR_BUYER_RESPONSE", "UNDER_REVIEW"):
+            st_badge = f"[cyan]{st_val}[/cyan]"
+        elif st_val == "WAITING_FOR_SELLER_RESPONSE":
+            st_badge = f"[bold red]{st_val}[/bold red]"
+        else:
+            st_badge = f"[yellow]{st_val}[/yellow]"
+
+        if d.get("resolution_order_id"):
+            st_badge += f" [dim]({d['resolution_order_id']})[/dim]"
         sku_entry = d.get("platform_sku", d.get("device_model", ""))
         table.add_row(
             d["dispute_id"],
@@ -717,8 +1170,16 @@ def cmd_disputes(
         )
 
     console.print(table)
+    first_open_id = next(
+        (
+            d["dispute_id"]
+            for d in disputes
+            if str(d.get("status", "")).upper() not in ("RESOLVED", "CLOSED", "CANCELLED")
+        ),
+        disputes[0]["dispute_id"] if disputes else "PP-D-90411-DE",
+    )
     console.print(
-        "[dim]Tip: Run[/dim] [bold cyan]pp disputes --resolve PP-D-90411-DE[/bold cyan] "
+        f"[dim]Tip: Run[/dim] [bold cyan]pp disputes --resolve {first_open_id}[/bold cyan] "
         "[dim]to draft an evidence response with Pulse AI and mint a live PayPal Sandbox replacement order.[/dim]"
     )
 
@@ -735,8 +1196,8 @@ def cmd_ledger(
     import io
 
     settings = get_settings(demo_mode=demo)
-    store = PulseStore(settings.db_path)
-    if not store.is_seeded():
+    store = PulseStore(settings.db_path, settings=settings)
+    if store.should_auto_seed():
         store.seed_telemetry()
 
     txs = store.get_transactions(limit=limit)
@@ -790,30 +1251,77 @@ def cmd_ledger(
 @app.command("order")
 @app.command("create-order", hidden=True)
 def cmd_order(
-    amount: float = typer.Argument(..., help="Numeric amount to charge (e.g. 5.99)"),
-    currency: str = typer.Argument("USD", help="Currency code (USD, EUR, GBP, PHP)"),
-    desc: str = typer.Option("PulseCore Pro Developer License", "--desc", "-d", help="Item or order description"),
-    sku: str = typer.Option("PulseCore Pro", "--sku", "-s", help="Platform SKU or tier"),
+    amount: str = typer.Argument(..., metavar="[create] AMOUNT", help="Numeric amount to charge (e.g. 5.99) or 'create' subcommand"),
+    currency: Optional[str] = typer.Argument(None, metavar="[CURRENCY]", help="Currency code (defaults to project currency or USD) or amount if 'create' used"),
+    currency_opt: Optional[str] = typer.Argument(None, metavar="[CURRENCY]", help="Currency code if 'create' subcommand used"),
+    desc: Optional[str] = typer.Option(None, "--desc", "-d", help="Item or order description (defaults to project SKU License)"),
+    sku: Optional[str] = typer.Option(None, "--sku", "-s", help="Platform SKU or tier (defaults to project default_sku)"),
+    release: Optional[str] = typer.Option(None, "--release", "-r", help="Release version to attribute this order to (e.g. v1.3.0)"),
     open_browser: bool = typer.Option(False, "--open", "-o", help="Open approval link in default browser"),
+    auto_capture_opt: Optional[bool] = typer.Option(None, "--auto-capture/--no-auto-capture", help="Automatically capture funds upon customer approval (defaults to setting)"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
     demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database"),
+    live: bool = typer.Option(False, "--live", help="Explicitly acknowledge execution on Live PayPal production endpoint"),
+    force: bool = typer.Option(False, "--force", "-f", help="Bypass interactive confirmation in Live mode"),
 ) -> None:
     """Mint a live PayPal checkout order (Orders v2 API) directly from the CLI."""
     import webbrowser
 
+    detected_ctx = detect_project_context()
+    default_cur = detected_ctx.get("default_currency") or "USD"
+    default_sku = detected_ctx.get("default_sku") if detected_ctx.get("config_file") else "PulseCore Pro"
+    effective_sku = sku or default_sku or "PulseCore Pro"
+    effective_desc = desc or f"{effective_sku} Developer License"
+
+    # Parse flexible syntax: supports both `pp order 5.99 EUR` and `pp order create 5.99 EUR`
+    if amount.lower() == "create":
+        if not currency:
+            console_err.print("[bold red]Usage Error:[/bold red] Missing numeric amount to charge. e.g. `pp order create 5.99 EUR`")
+            raise typer.Exit(code=EX_USAGE)
+        try:
+            parsed_amount = float(currency)
+        except ValueError:
+            console_err.print(f"[bold red]Usage Error:[/bold red] '{currency}' is not a valid numeric amount.")
+            raise typer.Exit(code=EX_USAGE)
+        parsed_currency = (currency_opt or default_cur).upper()
+    else:
+        try:
+            parsed_amount = float(amount)
+        except ValueError:
+            console_err.print(f"[bold red]Usage Error:[/bold red] '{amount}' is not a valid numeric amount.")
+            raise typer.Exit(code=EX_USAGE)
+        parsed_currency = (currency or default_cur).upper()
+
     settings = get_settings(demo_mode=demo)
-    store = PulseStore(settings.db_path)
+    store = PulseStore(settings.db_path, settings=settings)
     pp_client = PayPalClient(settings)
 
-    if not settings.paypal_client_id:
+    effective_release = release or detected_ctx.get("version") or "v1.2.1"
+
+    if not settings.has_paypal_credentials and not demo:
         console_err.print("[bold red]Error:[/bold red] PAYPAL_CLIENT_ID not configured. Run `pp setup` first.")
         raise typer.Exit(code=EX_CONFIG)
 
+    if settings.paypal_mode.lower() == "live" and not live and not force and not demo:
+        if sys.stdin.isatty():
+            confirmed = typer.confirm(
+                f"[LIVE PRODUCTION] Create live order for {parsed_amount:.2f} {parsed_currency} on api-m.paypal.com?",
+                default=False,
+            )
+            if not confirmed:
+                console_err.print("[yellow]Order creation aborted by user.[/yellow]")
+                raise typer.Exit(code=0)
+        else:
+            console_err.print(
+                "[bold red]Safety Error:[/bold red] Creating orders in LIVE production mode requires `--live` or `--force`."
+            )
+            raise typer.Exit(code=EX_USAGE)
+
     res = pp_client.create_order(
-        amount=amount,
-        currency=currency.upper(),
-        description=desc,
-        custom_id=f"cli_{sku.lower().replace(' ', '_')}",
+        amount=parsed_amount,
+        currency=parsed_currency,
+        description=effective_desc,
+        custom_id=f"release:{effective_release}|US|{effective_sku}",
     )
 
     if not res.success:
@@ -822,8 +1330,8 @@ def cmd_order(
 
     store.record_live_order(
         order=res,
-        release_version="v1.2.1",
-        platform_sku=sku,
+        release_version=effective_release,
+        platform_sku=effective_sku,
     )
 
     if json_output:
@@ -833,15 +1341,114 @@ def cmd_order(
     if open_browser and res.approve_url:
         webbrowser.open(res.approve_url)
 
+    should_auto_capture = settings.auto_capture if auto_capture_opt is None else auto_capture_opt
+    env_label = "Production" if settings.paypal_mode.lower() == "live" and not demo else "Sandbox"
+    capture_note = (
+        "[cyan]Auto-Capture is ACTIVE (Standard). Complete payment in browser to settle immediately.[/cyan]"
+        if should_auto_capture and not demo
+        else f"[dim]To capture this order after customer approval, run:\npp capture {res.order_id}{' --demo' if demo else ''}[/dim]"
+    )
+
     console.print(
         Panel(
-            f"[bold green][OK] Live PayPal Sandbox Order Minted Successfully[/bold green]\n\n"
+            f"[bold green][OK] Live PayPal {env_label} Order Minted Successfully[/bold green]\n\n"
             f"[bold white]Order ID:[/bold white]     [yellow]{res.order_id}[/yellow]\n"
+            f"[bold white]Status:[/bold white]       [cyan]{res.status}[/cyan] [dim](Pending buyer authorization & capture)[/dim]\n"
             f"[bold white]Amount:[/bold white]       [cyan]{res.amount:.2f} {res.currency}[/cyan]\n"
-            f"[bold white]SKU / Tier:[/bold white]   {sku}\n"
-            f"[bold white]Status:[/bold white]       {res.status}\n"
-            f"[bold white]Approve URL:[/bold white]  [link={res.approve_url}]{res.approve_url}[/link]",
-            title="[bold #00a8ea]PayPal Orders v2 API[/bold #00a8ea]",
+            f"[bold white]SKU / Tier:[/bold white]   {effective_sku}\n"
+            f"[bold white]Approve URL:[/bold white]  [link={res.approve_url}]{res.approve_url}[/link]\n\n"
+            f"{capture_note}",
+            title=f"[bold #00a8ea]PayPal Orders v2 API ({env_label})[/bold #00a8ea]",
+            border_style="#0070ba",
+        )
+    )
+
+    if open_browser and should_auto_capture and not demo and res.approve_url:
+        console.print("[dim cyan]Waiting for customer approval in browser (press Ctrl+C to cancel wait)...[/dim cyan]")
+        for attempt in range(15):
+            time.sleep(3.0)
+            try:
+                chk = pp_client.get_order(res.order_id)
+                if chk.success and chk.status == "APPROVED":
+                    cap = pp_client.capture_order(res.order_id)
+                    if cap.success:
+                        store.update_order_status(paypal_id=cap.order_id, status=cap.status, amount=cap.amount, currency=cap.currency)
+                        console.print(
+                            f"[bold green][AUTO-CAPTURE ✓] Order {cap.order_id} captured successfully! "
+                            f"Settled {cap.amount:.2f} {cap.currency} to merchant balance.[/bold green]"
+                        )
+                    break
+                elif chk.success and chk.status == "COMPLETED":
+                    console.print(f"[bold green][OK] Order {res.order_id} is already COMPLETED.[/bold green]")
+                    break
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Auto-capture wait canceled. Capture manually with `pp capture` when ready.[/yellow]")
+                break
+            except Exception:
+                pass
+
+
+@app.command("capture")
+def cmd_capture(
+    order_id: str = typer.Argument(..., help="PayPal Order ID to capture (e.g. 4K23850270297871H)"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+    demo: bool = typer.Option(False, "--demo", help="Run in isolated demo mode"),
+    live: bool = typer.Option(False, "--live", help="Acknowledge execution on Live PayPal production endpoint"),
+    force: bool = typer.Option(False, "--force", "-f", help="Bypass interactive confirmation in Live mode"),
+) -> None:
+    """Capture funds for an approved PayPal Order (Orders v2 API POST /v2/checkout/orders/{id}/capture)."""
+    settings = get_settings(demo_mode=demo)
+    store = PulseStore(settings.db_path, settings=settings)
+    pp_client = PayPalClient(settings)
+
+    if not settings.has_paypal_credentials and not demo:
+        console_err.print("[bold red]Error:[/bold red] PAYPAL_CLIENT_ID not configured. Run `pp setup` first.")
+        raise typer.Exit(code=EX_CONFIG)
+
+    if settings.paypal_mode.lower() == "live" and not live and not force and not demo:
+        if sys.stdin.isatty():
+            confirmed = typer.confirm(
+                f"[LIVE PRODUCTION] Capture funds for Order `{order_id}` on api-m.paypal.com?",
+                default=False,
+            )
+            if not confirmed:
+                console_err.print("[yellow]Order capture aborted by user.[/yellow]")
+                raise typer.Exit(code=0)
+        else:
+            console_err.print(
+                "[bold red]Safety Error:[/bold red] Capturing orders in LIVE production mode requires `--live` or `--force`."
+            )
+            raise typer.Exit(code=EX_USAGE)
+
+    res = pp_client.capture_order(order_id=order_id.strip())
+
+    if not res.success:
+        if json_output:
+            sys.stderr.write(json.dumps(res.model_dump(), indent=2) + "\n")
+        else:
+            console_err.print(f"[bold red]Capture Failed:[/bold red] {res.error}")
+        raise typer.Exit(code=EX_UNAVAILABLE)
+
+    store.update_order_status(
+        paypal_id=res.order_id,
+        status=res.status,
+        amount=res.amount,
+        currency=res.currency,
+    )
+
+    if json_output:
+        sys.stdout.write(json.dumps(res.model_dump(), indent=2) + "\n")
+        return
+
+    env_label = "Production" if settings.paypal_mode.lower() == "live" and not demo else "Sandbox"
+    console.print(
+        Panel(
+            f"[bold green][OK] PayPal {env_label} Order Captured Successfully[/bold green]\n\n"
+            f"[bold white]Order ID:[/bold white]     [yellow]{res.order_id}[/yellow]\n"
+            f"[bold white]Status:[/bold white]       [bold green]{res.status}[/bold green]\n"
+            f"[bold white]Amount:[/bold white]       [cyan]{res.amount:.2f} {res.currency}[/cyan]\n"
+            f"[bold white]Captured At:[/bold white]  {res.create_time or datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            title=f"[bold #00a8ea]PAYPAL {env_label.upper()} ORDER CAPTURED[/bold #00a8ea]",
             border_style="#0070ba",
         )
     )
@@ -850,26 +1457,85 @@ def cmd_order(
 @app.command("invoice")
 @app.command("create-invoice", hidden=True)
 def cmd_invoice(
-    amount: float = typer.Argument(..., help="Invoice amount to bill"),
-    currency: str = typer.Argument("USD", help="Currency code (USD, EUR, GBP, PHP)"),
-    recipient_email: str = typer.Argument(..., help="Recipient customer or partner email"),
-    item: str = typer.Option("Enterprise License", "--item", "-i", help="Line item description"),
+    amount: str = typer.Argument(..., metavar="[create] AMOUNT", help="Invoice amount to bill or 'create' subcommand"),
+    currency: Optional[str] = typer.Argument(None, metavar="[CURRENCY]", help="Currency code or numeric amount if 'create' used"),
+    recipient_email: Optional[str] = typer.Argument(None, metavar="[EMAIL]", help="Recipient customer email or currency code"),
+    recipient_opt: Optional[str] = typer.Argument(None, metavar="[EMAIL]", help="Recipient email if 'create' used with currency"),
+    item: Optional[str] = typer.Option(None, "--item", "-i", help="Line item description (defaults to project SKU)"),
     json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
     demo: bool = typer.Option(False, "--demo", help="Run against isolated demo database"),
+    live: bool = typer.Option(False, "--live", help="Explicitly acknowledge execution on Live PayPal production endpoint"),
+    force: bool = typer.Option(False, "--force", "-f", help="Bypass interactive confirmation in Live mode"),
 ) -> None:
     """Create a live PayPal draft invoice (Invoicing v2 API) directly from the CLI."""
+    detected_ctx = detect_project_context()
+    default_cur = detected_ctx.get("default_currency") or "USD"
+    effective_item = item or (f"{detected_ctx['default_sku']} License" if detected_ctx.get("config_file") and detected_ctx.get("default_sku") else "Enterprise License")
+    # Parse flexible syntax: supports both `pp invoice 49.00 USD user@example.com` and `pp invoice create 49.00 USD user@example.com`
+    if amount.lower() == "create":
+        if not currency:
+            console_err.print("[bold red]Usage Error:[/bold red] Missing numeric amount for invoice. e.g. `pp invoice create 49.00 USD partner@example.com`")
+            raise typer.Exit(code=EX_USAGE)
+        try:
+            parsed_amount = float(currency)
+        except ValueError:
+            console_err.print(f"[bold red]Usage Error:[/bold red] '{currency}' is not a valid numeric amount.")
+            raise typer.Exit(code=EX_USAGE)
+        if recipient_email and "@" in recipient_email:
+            parsed_currency = default_cur
+            parsed_recipient = recipient_email
+        else:
+            parsed_currency = (recipient_email or default_cur).upper()
+            parsed_recipient = recipient_opt or ""
+        if not parsed_recipient or "@" not in parsed_recipient:
+            console_err.print("[bold red]Usage Error:[/bold red] Missing recipient email address.")
+            raise typer.Exit(code=EX_USAGE)
+    else:
+        try:
+            parsed_amount = float(amount)
+        except ValueError:
+            console_err.print(f"[bold red]Usage Error:[/bold red] '{amount}' is not a valid numeric amount.")
+            raise typer.Exit(code=EX_USAGE)
+        if recipient_email and "@" in recipient_email and not recipient_opt:
+            parsed_currency = (currency or default_cur).upper()
+            parsed_recipient = recipient_email
+        elif currency and "@" in currency and not recipient_opt:
+            parsed_currency = default_cur
+            parsed_recipient = currency
+        else:
+            parsed_currency = (currency or default_cur).upper()
+            parsed_recipient = recipient_email or (recipient_opt or "")
+        if not parsed_recipient or "@" not in parsed_recipient:
+            console_err.print("[bold red]Usage Error:[/bold red] Missing recipient email address.")
+            raise typer.Exit(code=EX_USAGE)
+
     settings = get_settings(demo_mode=demo)
     pp_client = PayPalClient(settings)
 
-    if not settings.paypal_client_id:
+    if not settings.paypal_client_id and not demo:
         console_err.print("[bold red]Error:[/bold red] PAYPAL_CLIENT_ID not configured. Run `pp setup` first.")
         raise typer.Exit(code=EX_CONFIG)
 
+    if settings.paypal_mode.lower() == "live" and not live and not force and not demo:
+        if sys.stdin.isatty():
+            confirmed = typer.confirm(
+                f"[LIVE PRODUCTION] Create live invoice for {parsed_amount:.2f} {parsed_currency} to {parsed_recipient} on api-m.paypal.com?",
+                default=False,
+            )
+            if not confirmed:
+                console_err.print("[yellow]Invoice creation aborted by user.[/yellow]")
+                raise typer.Exit(code=0)
+        else:
+            console_err.print(
+                "[bold red]Safety Error:[/bold red] Creating invoices in LIVE production mode requires `--live` or `--force`."
+            )
+            raise typer.Exit(code=EX_USAGE)
+
     res = pp_client.create_draft_invoice(
-        recipient_email=recipient_email,
-        amount=amount,
-        currency=currency.upper(),
-        item_name=item,
+        recipient_email=parsed_recipient,
+        amount=parsed_amount,
+        currency=parsed_currency,
+        item_name=effective_item,
     )
 
     if not res.success:
@@ -905,13 +1571,19 @@ def cmd_ask(
     import webbrowser
 
     settings = get_settings(demo_mode=demo)
-    store = PulseStore(settings.db_path)
-    if demo and not store.is_seeded():
+    store = PulseStore(settings.db_path, settings=settings)
+    if demo and store.should_auto_seed():
         store.seed_telemetry()
     pp_client = PayPalClient(settings)
 
     full_question = " ".join(question).strip()
-    res = ask_copilot(question=full_question, store=store, paypal_client=pp_client, settings=settings)
+    if not json_output and onboarding.should_animate():
+        with onboarding.LiveChecklist(console) as cl:
+            idx_q = cl.start_step("Pulse AI Copilot", "Querying ledger telemetry & reasoning...")
+            res = ask_copilot(question=full_question, store=store, paypal_client=pp_client, settings=settings)
+            cl.finish_step(idx_q, "ok", f"Completed in {res.latency_ms / 1000:.2f}s ({res.tokens_per_sec:.0f} tok/s)")
+    else:
+        res = ask_copilot(question=full_question, store=store, paypal_client=pp_client, settings=settings)
 
     if json_output:
         sys.stdout.write(json.dumps(res.model_dump(), indent=2) + "\n")
@@ -946,17 +1618,25 @@ def cmd_trigger(
         "payment.capture.completed",
         help="PayPal webhook event type (e.g. payment.capture.completed, customer.dispute.created, customer.dispute.resolved, checkout.order.approved)",
     ),
-    amount: float = typer.Option(19.99, "--amount", "-a", help="Gross transaction amount"),
-    currency: str = typer.Option("USD", "--currency", "-c", help="Currency code (USD, EUR, PHP, GBP)"),
-    sku: str = typer.Option("PulseCore Pro", "--sku", help="Platform SKU or license name"),
-    dispute_id: str = typer.Option("PP-D-99881-US", "--id", help="Dispute ID for dispute events"),
+    amount: Optional[float] = typer.Option(None, "--amount", "-a", help="Gross transaction amount (defaults to project default_price or 19.99)"),
+    currency: Optional[str] = typer.Option(None, "--currency", "-c", help="Currency code (defaults to project default_currency or USD)"),
+    sku: Optional[str] = typer.Option(None, "--sku", help="Platform SKU or license name (defaults to project default_sku)"),
+    release: Optional[str] = typer.Option(None, "--release", "-r", help="Release version to attribute event to (e.g. v1.3.0)"),
+    dispute_id: Optional[str] = typer.Option(None, "--id", help="Dispute ID for dispute events (defaults to unique ID on creation, or PP-D-99881-US on resolution)"),
     json_output: bool = typer.Option(False, "--json", help="Output event payload and ingestion receipt as JSON"),
 ) -> None:
     """Synthesize and ingest realistic PayPal Webhook events directly into the local SQLite ledger."""
     settings = get_settings()
     store = PulseStore(settings.db_path)
-    if not store.is_seeded():
+    if store.should_auto_seed():
         store.seed_telemetry()
+
+    detected_ctx = detect_project_context()
+    has_cfg = bool(detected_ctx.get("config_file"))
+    effective_release = release or detected_ctx.get("version") or "v1.2.1"
+    amount = float(amount if amount is not None else (detected_ctx.get("default_price", 19.99) if has_cfg else 19.99))
+    currency = (currency or (detected_ctx.get("default_currency", "USD") if has_cfg else "USD")).upper()
+    sku = sku or (detected_ctx.get("default_sku") if has_cfg else "PulseCore Pro") or "PulseCore Pro"
 
     evt_normalized = event_type.strip().lower().replace("_", ".")
     fixtures_dir = Path(__file__).parent / "fixtures"
@@ -980,13 +1660,20 @@ def cmd_trigger(
                 "id": f"RES-SIM-{int(time.time())}",
                 "status": "COMPLETED",
                 "amount": {"value": str(amount), "currency_code": currency.upper()},
-                "custom_id": f"v1.2.1|US|{sku}",
+                "custom_id": f"release:{effective_release}|US|{sku}",
             },
         }
 
-    # Override with command-line arguments if provided
+    # Override with command-line arguments and generate unique IDs per trigger invocation
+    import uuid
+
+    uniq_suffix = uuid.uuid4().hex[:7].upper()
+    event_payload["id"] = f"WH-SIM-{uniq_suffix}"
     if "resource" in event_payload:
         res_obj = event_payload["resource"]
+        if evt_normalized in ("payment.capture.completed", "checkout.order.approved"):
+            prefix = "CAP-SIM" if "capture" in evt_normalized else "ORD-SIM"
+            res_obj["id"] = f"{prefix}-{uniq_suffix}"
         if "amount" in res_obj:
             res_obj["amount"]["value"] = str(amount)
             res_obj["amount"]["currency_code"] = currency.upper()
@@ -994,9 +1681,16 @@ def cmd_trigger(
             res_obj["dispute_amount"]["value"] = str(amount)
             res_obj["dispute_amount"]["currency_code"] = currency.upper()
         if "dispute_id" in res_obj:
-            res_obj["dispute_id"] = dispute_id
-        if "custom_id" in res_obj:
-            res_obj["custom_id"] = f"v1.2.1|US|{sku}"
+            if dispute_id:
+                res_obj["dispute_id"] = dispute_id
+            elif evt_normalized == "customer.dispute.created":
+                res_obj["dispute_id"] = f"PP-D-{uniq_suffix}"
+            else:
+                open_disps = store.get_disputes(status_filter="OPEN")
+                res_obj["dispute_id"] = open_disps[0]["dispute_id"] if open_disps else "PP-D-99881-US"
+        if "release_version" in res_obj:
+            res_obj["release_version"] = effective_release
+        res_obj["custom_id"] = f"release:{effective_release}|US|{sku}"
 
     receipt = store.record_webhook_event(event_payload)
 
@@ -1039,7 +1733,7 @@ def cmd_demo(
     """Launch the zero-credential interactive onboarding demo tour backed by isolated sample telemetry (.pulse_cache/demo.db)."""
     settings = get_settings(demo_mode=True)
     store = PulseStore(settings.db_path)
-    if not store.is_seeded():
+    if store.should_auto_seed():
         store.seed_telemetry()
 
     summary = store.get_dashboard_summary()
@@ -1072,112 +1766,44 @@ def cmd_demo(
         )
         return
 
-    # Interactive Guided Tour
-    console.print()
-    console.print(
-        Panel(
-            format_mascot_header(
-                title="Meet Pulse",
-                subtitle="Terminal-Native Financial Telemetry & AI Copilot",
-                state="idle",
-            )
-            + "\n\n[bold #c9d1d9]You are viewing an isolated, zero-credential demo session.[/bold #c9d1d9]\n"
-            "This walkthrough demonstrates how PayPal Pulse bridges rapid code deployments with real-time financial observability.",
-            title="[bold #00a8ea]ONBOARDING WALKTHROUGH[/bold #00a8ea]",
-            border_style="#0070ba",
-            padding=(1, 2),
-        )
+    # Interactive onboarding (demo path)
+    onboarding.welcome(console, first_run=True)
+    choice = onboarding.select(
+        "Where would you like to start?",
+        [
+            ("Launch terminal deck with sample data (`pp tui --demo`)", "tui"),
+            ("Connect PayPal Sandbox credentials (`pp setup`)", "setup"),
+            ("Exit to shell", "exit"),
+        ],
+        default="tui",
     )
-
-    # Step 1: Cash flow & fee drag
-    console.print("\n[bold cyan]─── Step 1/4: Multi-Currency Cash Flow & Real-Time Net Take-Home ───[/bold cyan]")
-    console.print(
-        f"  • [bold]30-Day Gross Revenue:[/bold] ${summary['total_gross_usd']:,.2f} USD across USD, EUR, and PHP\n"
-        f"  • [bold]PayPal Fee Drag:[/bold] [bold red]-${summary['total_fees_usd']:,.2f}[/bold red] ({summary['fee_drag_pct']}% total friction)\n"
-        f"  • [bold]True Net Margin:[/bold] [bold green]${summary['total_net_usd']:,.2f} USD[/bold green] ({summary['net_margin_pct']}% take-home)\n"
-        f"  • [bold]Merchant Health Index:[/bold] [bold cyan]{summary['health_score']}/100[/bold cyan] (Disputes: {summary['open_disputes_count']} open)"
-    )
-    typer.prompt("\nPress [Enter] to inspect Step 2 (Git Release-to-Revenue Correlation)", default="", show_default=False)
-
-    # Step 2: Release correlation
-    console.print("\n[bold cyan]─── Step 2/4: Git Release-to-Revenue Correlation (`pp timeline`) ───[/bold cyan]")
-    releases = summary.get("releases", [])
-    for r in releases:
-        badge_style = "bold green" if "SURGE" in r.get("status_badge", "") else ("bold red" if "DISPUTE" in r.get("status_badge", "") else "cyan")
-        console.print(
-            f"  • [bold]{r['version']}[/bold] ([dim]{r['git_commit']}[/dim]) — Conv: [bold]{r['conversion_rate']}%[/bold] | "
-            f"Net: [bold green]${r['net_usd']:,.2f}[/bold green] | "
-            f"Status: [{badge_style}]{r['status_badge']}[/{badge_style}]"
-        )
-        console.print(f"    [dim]Diagnostic: {r['ai_diagnostic']}[/dim]")
-    typer.prompt("\nPress [Enter] to inspect Step 3 (Proactive Dispute Remediation)", default="", show_default=False)
-
-    # Step 3: Dispute AI Remediation
-    console.print("\n[bold cyan]─── Step 3/4: Proactive Buyer Dispute AI Remediation (`pp disputes`) ───[/bold cyan]")
-    disputes = summary.get("disputes", [])
-    if disputes:
-        d = disputes[0]
-        console.print(
-            f"  • [bold red]Active Dispute:[/bold red] `{d['dispute_id']}` ({d['amount']:.2f} {d['currency']})\n"
-            f"    Buyer: {d['buyer_email']} (Country: {d['buyer_country']})\n"
-            f"    Reason: {d['reason']} — {d['description']}\n"
-            f"    [bold green]Pulse AI Action:[/bold green] Auto-drafts formal evidence citing hotfix v1.2.2 and generates replacement order."
-        )
-    typer.prompt("\nPress [Enter] to inspect Step 4 (Instant Webhook Ingestion)", default="", show_default=False)
-
-    # Step 4: Webhook Simulation
-    console.print("\n[bold cyan]─── Step 4/4: Instant Local Webhook Ingestion (`pp trigger`) ───[/bold cyan]")
-    console.print(
-        "  • PayPal's official Reporting API has an up-to-3-hour indexing delay.\n"
-        "  • Pulse's Dual-Engine SQLite ledger ingests webhook captures in [bold green]<5ms[/bold green], giving instant dashboard feedback."
-    )
-
-    console.print("\n" + "=" * 70)
-    console.print("[bold green][OK] Onboarding walkthrough complete![/bold green]")
-    console.print("[bold]Next action:[/bold]")
-    console.print("  [bold cyan][1][/bold cyan] Launch Full-Screen Interactive Terminal Command Deck (`pp tui --demo`)")
-    console.print("  [bold cyan][2][/bold cyan] Connect Live PayPal Sandbox Credentials (`pp setup`)")
-    console.print("  [bold cyan][3][/bold cyan] Exit to shell")
-
-    choice = typer.prompt("Select option", default="1")
-    if choice.strip() == "1":
+    if choice == "tui":
         from pulse.tui import PayPalPulseTUI
-        tui_app = PayPalPulseTUI(demo_mode=True)
-        tui_app.run()
-    elif choice.strip() == "2":
-        cmd_setup()
+
+        PayPalPulseTUI(demo_mode=True).run()
+    elif choice == "setup":
+        run_setup_wizard(offer_tui=True)
     else:
-        console.print("[dim]Exiting demo. Run 'pp --help' anytime to explore all subcommands.[/dim]")
+        console.print("[dim]Run `pp --help` anytime to explore all subcommands.[/dim]")
 
-
-@app.command("setup")
-@app.command("init", hidden=True)
-def cmd_setup(
-    client_id: Optional[str] = typer.Option(None, "--client-id", help="PayPal REST App Client ID"),
-    client_secret: Optional[str] = typer.Option(None, "--client-secret", help="PayPal REST App Secret"),
-    mode: str = typer.Option("sandbox", "--mode", help="PayPal environment (sandbox or live)"),
-    groq_key: Optional[str] = typer.Option(None, "--groq-key", help="Groq API Key for Pulse AI copilot (optional)"),
-    demo: bool = typer.Option(False, "--demo", help="Launch instant demo mode instead of configuring credentials"),
+def run_setup_wizard(
+    client_id: Optional[str] = None,
+    client_secret: Optional[str] = None,
+    mode: str = "sandbox",
+    groq_key: Optional[str] = None,
+    ai_provider: Optional[str] = None,
+    ai_key: Optional[str] = None,
+    ai_base_url: Optional[str] = None,
+    ai_model: Optional[str] = None,
+    offer_tui: bool = True,
 ) -> None:
-    """Guided onboarding setup wizard to configure PayPal Sandbox and Groq AI credentials."""
-    if demo:
-        cmd_demo(tour=True, json_output=False)
-        return
-
-    # Check non-interactive safety
-    if not sys.stdin.isatty() and not (client_id and client_secret):
-        console_err.print(
-            "[bold red]Error:[/bold red] `pp setup` in non-interactive environment requires `--client-id` and `--client-secret`.\n"
-            "Usage: pp setup --client-id <ID> --client-secret <SECRET> [--mode sandbox|live] [--groq-key <KEY>]"
-        )
-        raise typer.Exit(code=EX_USAGE)
-
+    """Execute the interactive or automated credential setup and verification wizard."""
     console.print()
     console.print(
         Panel(
             format_mascot_header(
                 title="Credential Setup Wizard",
-                subtitle="Configure live PayPal Sandbox REST credentials & Pulse AI engine",
+                subtitle="Configure live PayPal Sandbox REST credentials & Pulse AI engine (BYOK)",
                 state="idle",
             ),
             title="[bold #00a8ea]CREDENTIAL SETUP[/bold #00a8ea]",
@@ -1186,67 +1812,403 @@ def cmd_setup(
         )
     )
 
+    existing_settings = get_settings(demo_mode=False)
     if not (client_id and client_secret):
-        console.print("[bold]How would you like to proceed?[/bold]")
-        console.print("  [bold cyan][1][/bold cyan] Launch Instant Demo Tour (Explore with sample SaaS data — zero setup)")
-        console.print("  [bold cyan][2][/bold cyan] Connect Live PayPal Sandbox Credentials")
-        console.print("  [bold cyan][3][/bold cyan] Cancel & Exit")
+        if not sys.stdin.isatty() and existing_settings.has_paypal_credentials and (ai_provider or ai_key or groq_key or ai_base_url or ai_model):
+            c_id = existing_settings.paypal_client_id
+            c_sec = existing_settings.paypal_client_secret
+            c_mode = existing_settings.paypal_mode
+            chosen_provider = (ai_provider or ("groq" if groq_key else existing_settings.active_ai_provider)).strip().lower()
+            chosen_ai_key = (ai_key or groq_key or existing_settings.active_ai_api_key or "").strip()
+            chosen_ai_base_url = (ai_base_url or existing_settings.ai_base_url or "").strip()
+            chosen_ai_model = (ai_model or existing_settings.ai_model or "").strip()
+        else:
+            if existing_settings.has_paypal_credentials:
+                masked_id = (
+                    existing_settings.paypal_client_id[:8] + "..." + existing_settings.paypal_client_id[-4:]
+                    if len(existing_settings.paypal_client_id) > 12
+                    else "***"
+                )
+                console.print(f"[bold green]Active credentials detected:[/bold green] `{masked_id}` (Mode: [bold cyan]{existing_settings.paypal_mode.upper()}[/bold cyan])")
+                console.print("[dim]Press Enter with an empty Client ID to keep existing credentials, or enter 'q' to cancel.[/dim]\n")
+            else:
+                onboarding.step_header(console, 1, 3, "PayPal REST credentials")
+                console.print(onboarding.PAYPAL_KEYS_HELP)
+                console.print("[dim]Type 'q' or press Enter on an empty prompt to cancel anytime.[/dim]\n")
 
-        choice = typer.prompt("Select option", default="1")
-        if choice.strip() == "1":
-            cmd_demo(tour=True, json_output=False)
-            return
-        elif choice.strip() == "3":
-            console.print("[dim]Setup cancelled.[/dim]")
-            return
+            c_id = typer.prompt("  PayPal Client ID", default="").strip()
+            if not c_id:
+                if existing_settings.has_paypal_credentials:
+                    if not sys.stdin.isatty():
+                        console.print("[bold green][OK] Retained existing active credentials.[/bold green]")
+                        return
+                    console.print("[bold green][OK] Retaining existing active PayPal credentials.[/bold green]")
+                    c_id = existing_settings.paypal_client_id
+                    c_sec = existing_settings.paypal_client_secret
+                    c_mode = existing_settings.paypal_mode
+                else:
+                    console.print("[dim]Setup cancelled.[/dim]")
+                    return
+            elif c_id.lower() in ("q", "quit", "exit"):
+                console.print("[dim]Setup cancelled.[/dim]")
+                return
+            else:
+                c_sec = typer.prompt("  PayPal Client Secret", default="", show_default=False, hide_input=True).strip()
+                if not c_sec or c_sec.lower() in ("q", "quit", "exit"):
+                    console.print("[dim]Setup cancelled (Secret cannot be empty).[/dim]")
+                    return
 
-        # Interactive prompts
-        console.print("\n[bold]Enter your PayPal REST App Credentials[/bold] [dim](from developer.paypal.com)[/dim]:")
-        c_id = typer.prompt("  PayPal Client ID").strip()
-        c_sec = typer.prompt("  PayPal Client Secret", hide_input=True).strip()
-        c_mode = typer.prompt("  PayPal Mode (sandbox/live)", default="sandbox").strip().lower()
-        g_key = typer.prompt("  Groq API Key (optional, press Enter to skip)", default="", hide_input=True).strip()
+                console.print(f"\n{onboarding.MODE_HELP}")
+                c_mode = onboarding.select(
+                    "PayPal mode",
+                    [("Sandbox (test money, recommended)", "sandbox"), ("Live (real money)", "live")],
+                    default="sandbox",
+                )
+
+            onboarding.step_header(console, 2, 3, "Pulse AI engine (optional)")
+            console.print(
+                "[dim]Pulse AI answers questions and drafts dispute evidence. "
+                "Bring your own key. Choose Skip to use the offline local engine.[/dim]\n"
+            )
+            chosen_provider = onboarding.select(
+                "AI provider",
+                [
+                    ("Groq (fast, free tier)", "groq"),
+                    ("OpenAI", "openai"),
+                    ("Google Gemini", "gemini"),
+                    ("Anthropic Claude", "anthropic"),
+                    ("xAI Grok", "xai"),
+                    ("Ollama / local (http://localhost:11434/v1)", "ollama"),
+                    ("Custom OpenAI-compatible endpoint", "custom"),
+                    ("Skip (offline local engine)", "none"),
+                ],
+                default="groq",
+            )
+            chosen_ai_key = ""
+            chosen_ai_base_url = ""
+            chosen_ai_model = ""
+
+            if chosen_provider == "groq":
+                chosen_ai_key = typer.prompt(
+                    "  Groq API Key (from console.groq.com)",
+                    default=existing_settings.groq_api_key or "",
+                    hide_input=True,
+                ).strip()
+            elif chosen_provider == "openai":
+                chosen_ai_key = typer.prompt(
+                    "  OpenAI API Key (from platform.openai.com)",
+                    default=existing_settings.openai_api_key or "",
+                    hide_input=True,
+                ).strip()
+            elif chosen_provider == "gemini":
+                chosen_ai_key = typer.prompt(
+                    "  Google Gemini API Key (from aistudio.google.com)",
+                    default=existing_settings.gemini_api_key or "",
+                    hide_input=True,
+                ).strip()
+            elif chosen_provider == "anthropic":
+                chosen_ai_key = typer.prompt(
+                    "  Anthropic API Key (from console.anthropic.com)",
+                    default=existing_settings.anthropic_api_key or "",
+                    hide_input=True,
+                ).strip()
+            elif chosen_provider == "xai":
+                chosen_ai_key = typer.prompt(
+                    "  xAI API Key (from console.x.ai)",
+                    default=existing_settings.xai_api_key or "",
+                    hide_input=True,
+                ).strip()
+            elif chosen_provider == "ollama":
+                chosen_ai_base_url = typer.prompt(
+                    "  Ollama Base URL",
+                    default="http://localhost:11434/v1",
+                ).strip()
+                chosen_ai_model = typer.prompt(
+                    "  Ollama Model ID",
+                    default="llama3.2",
+                ).strip()
+            elif chosen_provider == "custom":
+                chosen_ai_base_url = typer.prompt(
+                    "  Custom Base URL",
+                    default="http://localhost:8000/v1",
+                ).strip()
+                chosen_ai_key = typer.prompt(
+                    "  Custom API Key (or press Enter if none)",
+                    default="",
+                    hide_input=True,
+                ).strip()
+                chosen_ai_model = typer.prompt(
+                    "  Custom Model ID",
+                    default="default",
+                ).strip()
+            if chosen_provider not in ("ollama", "custom", "none") and not chosen_ai_key:
+                chosen_provider = "none"
     else:
         c_id = client_id.strip()
         c_sec = client_secret.strip()
         c_mode = mode.strip().lower()
-        g_key = (groq_key or "").strip()
+        if ai_provider or ai_key or groq_key or ai_base_url or ai_model:
+            chosen_provider = (ai_provider or ("groq" if groq_key else existing_settings.active_ai_provider)).strip().lower()
+            chosen_ai_key = (ai_key or groq_key or existing_settings.active_ai_api_key or "").strip()
+            chosen_ai_base_url = (ai_base_url or existing_settings.ai_base_url or "").strip()
+            chosen_ai_model = (ai_model or existing_settings.ai_model or "").strip()
+        elif existing_settings.has_ai_credentials:
+            chosen_provider = existing_settings.active_ai_provider
+            chosen_ai_key = existing_settings.active_ai_api_key
+            chosen_ai_base_url = existing_settings.ai_base_url
+            chosen_ai_model = existing_settings.ai_model
+        else:
+            chosen_provider = "none"
+            chosen_ai_key = ""
+            chosen_ai_base_url = ""
+            chosen_ai_model = ""
 
-    # Pre-flight validation against PayPal Sandbox
-    console.print("\n[dim]Verifying credentials against PayPal REST OAuth2 endpoint...[/dim]")
+    # Pre-flight validation against PayPal Sandbox & AI via LiveChecklist
+    onboarding.step_header(console, 3, 3, "Verify and save")
     test_settings = PulseSettings(
         paypal_client_id=c_id,
         paypal_client_secret=c_sec,
         paypal_mode=c_mode,
-        groq_api_key=g_key,
+        groq_api_key=chosen_ai_key if chosen_provider == "groq" else "",
     )
     test_client = PayPalClient(test_settings)
-    auth_res = test_client.authenticate(force_refresh=True)
+
+    save_kwargs = {
+        "paypal_client_id": c_id,
+        "paypal_client_secret": c_sec,
+        "paypal_mode": c_mode,
+        "ai_provider": chosen_provider,
+        "ai_base_url": chosen_ai_base_url,
+        "ai_api_key": chosen_ai_key,
+        "ai_model": chosen_ai_model,
+    }
+    if chosen_provider == "groq":
+        save_kwargs["groq_api_key"] = chosen_ai_key
+    elif chosen_provider == "openai":
+        save_kwargs["openai_api_key"] = chosen_ai_key
+    elif chosen_provider == "gemini":
+        save_kwargs["gemini_api_key"] = chosen_ai_key
+    elif chosen_provider == "anthropic":
+        save_kwargs["anthropic_api_key"] = chosen_ai_key
+    elif chosen_provider == "xai":
+        save_kwargs["xai_api_key"] = chosen_ai_key
+
+    # Preserve saved keys for providers the user did not re-enter (avoid silent data loss).
+    for _field in ("groq_api_key", "openai_api_key", "gemini_api_key", "anthropic_api_key", "xai_api_key", "openrouter_api_key"):
+        if not save_kwargs.get(_field):
+            _old = getattr(existing_settings, _field, "") or ""
+            if _old:
+                save_kwargs[_field] = _old
+
+    with onboarding.LiveChecklist(console) as checklist:
+        idx_pp = checklist.start_step("PayPal REST OAuth2", f"Negotiating {c_mode} handshake...")
+        auth_res = test_client.authenticate(force_refresh=True)
+        if not auth_res.authenticated:
+            checklist.finish_step(idx_pp, "fail", f"Authentication failed: {auth_res.error}")
+        else:
+            checklist.finish_step(
+                idx_pp,
+                "ok",
+                f"Connected to {c_mode.upper()} (App `{auth_res.app_id}`, {auth_res.latency_ms:.0f}ms)",
+            )
 
     if not auth_res.authenticated:
         console_err.print(f"\n[bold red][FAIL] Authentication Failed:[/bold red] {auth_res.error}")
         console_err.print("[yellow]Please verify your Client ID and Secret in developer.paypal.com.[/yellow]")
         raise typer.Exit(code=EX_NOPERM)
 
-    # Save to global config file (~/.pulse/config.json)
-    cfg_path = save_global_config(
-        paypal_client_id=c_id,
-        paypal_client_secret=c_sec,
-        paypal_mode=c_mode,
-        groq_api_key=g_key,
+    with onboarding.LiveChecklist(console) as checklist2:
+        idx_cfg = checklist2.start_step("Local vault", "Writing configuration...")
+        cfg_path = save_global_config(**save_kwargs)
+        perm_note = "owner-only, 0600" if sys.platform != "win32" else "plain JSON; protect your user profile"
+        checklist2.finish_step(idx_cfg, "ok", f"Saved `{cfg_path}` ({perm_note})")
+
+        idx_ai = checklist2.start_step("Pulse AI copilot", "Checking inference engine...")
+        if chosen_provider not in ("none", ""):
+            ai_ping = verify_groq_connection(PulseSettings(**save_kwargs))
+            if ai_ping.connected:
+                checklist2.finish_step(idx_ai, "ok", f"[bold green]● Pulse AI Connected:[/bold green] {ai_ping.model} ({ai_ping.latency_ms:.0f}ms)")
+            else:
+                checklist2.finish_step(idx_ai, "warn", f"[dim yellow][!] AI Note: {ai_ping.error}[/dim yellow]")
+        else:
+            checklist2.finish_step(idx_ai, "ok", "[bold cyan]● Pulse AI Mode:[/bold cyan] Local Deterministic Engine (Zero-Key Offline Fallback Active)")
+
+    onboarding.celebration_banner(
+        console,
+        title="Pulse Ready",
+        subtitle=f"Connected to PayPal {c_mode.upper()} • {chosen_provider.upper()} AI Engine",
     )
 
-    console.print(
-        f"\n[bold green][OK] Credentials Verified & Saved Successfully![/bold green]\n"
-        f"  • [bold]Target Config:[/bold] `{cfg_path}` (Permissions: 0600)\n"
-        f"  • [bold]App ID:[/bold] `{auth_res.app_id}`\n"
-        f"  • [bold]Latency:[/bold] {auth_res.latency_ms:.1f}ms\n"
-        f"  • [bold]Mode:[/bold] {c_mode.upper()}\n\n"
-        f"[bold]Next Steps:[/bold]\n"
-        f"  • Run `pp pulse` to view live financial telemetry.\n"
-        f"  • Run `pp tui` to launch the full-screen terminal command deck.\n"
-        f"  • Run `pp ask \"What is our net margin?\"` to chat with Pulse AI."
+    onboarding.summary_table(
+        console,
+        [
+            ("Status", "[bold green]Credentials verified and saved[/bold green]"),
+            ("Config file", f"{cfg_path}" + (" (owner-only, 0600)" if sys.platform != "win32" else " (plain JSON; protect your user profile)")),
+            ("App ID", f"{auth_res.app_id}"),
+            ("Latency", f"{auth_res.latency_ms:.1f} ms"),
+            ("PayPal mode", c_mode.upper()),
+            ("AI provider", chosen_provider.upper()),
+        ],
+        latency_ms=auth_res.latency_ms,
     )
+
+    onboarding.try_now_cards(console, sandbox_mode=(c_mode == "sandbox"))
+    if offer_tui and onboarding.is_interactive() and not (client_id and client_secret):
+        if onboarding.select("Launch the terminal deck now?", [("Yes, open `pp tui`", "yes"), ("No, exit to shell", "no")], default="yes") == "yes":
+            from pulse.tui import PayPalPulseTUI
+
+            PayPalPulseTUI(demo_mode=False).run()
+
+
+@app.command("setup")
+@app.command("configure", hidden=True)
+def cmd_setup(
+    client_id: Optional[str] = typer.Option(None, "--client-id", help="PayPal REST App Client ID"),
+    client_secret: Optional[str] = typer.Option(None, "--client-secret", help="PayPal REST App Secret"),
+    mode: str = typer.Option("sandbox", "--mode", help="PayPal environment (sandbox or live)"),
+    groq_key: Optional[str] = typer.Option(None, "--groq-key", help="Groq API Key (backward compatibility)"),
+    provider: Optional[str] = typer.Option(None, "--provider", help="AI Provider (groq, openai, gemini, anthropic, xai, ollama, custom)"),
+    ai_key: Optional[str] = typer.Option(None, "--ai-key", help="API Key for the chosen AI provider"),
+    ai_base_url: Optional[str] = typer.Option(None, "--ai-base-url", help="Base URL for custom/Ollama endpoint"),
+    ai_model: Optional[str] = typer.Option(None, "--ai-model", help="Model ID for custom/Ollama endpoint"),
+    demo: bool = typer.Option(False, "--demo", help="Launch instant demo mode instead of configuring credentials"),
+) -> None:
+    """Guided onboarding setup wizard to configure PayPal Sandbox and AI Copilot credentials."""
+    if demo:
+        cmd_demo(tour=True, json_output=False)
+        return
+
+    existing_settings = get_settings(demo_mode=False)
+    # Check non-interactive safety: either PayPal credentials must be supplied or existing credentials re-used
+    if not sys.stdin.isatty() and not (client_id and client_secret):
+        if not (existing_settings.has_paypal_credentials and (provider or ai_key or groq_key or ai_base_url or ai_model)):
+            console_err.print(
+                "[bold red]Error:[/bold red] `pp setup` in non-interactive environment requires `--client-id` and `--client-secret`.\n"
+                "Usage: pp setup --client-id <ID> --client-secret <SECRET> [--mode sandbox|live] [--provider <PROVIDER>] [--ai-key <KEY>]"
+            )
+            raise typer.Exit(code=EX_USAGE)
+
+    run_setup_wizard(
+        client_id=client_id,
+        client_secret=client_secret,
+        mode=mode,
+        groq_key=groq_key,
+        ai_provider=provider,
+        ai_key=ai_key,
+        ai_base_url=ai_base_url,
+        ai_model=ai_model,
+    )
+
+
+@app.command("doctor")
+def cmd_doctor(
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+    offline: bool = typer.Option(False, "--offline", help="Skip network checks"),
+) -> None:
+    """Check credentials, PayPal and AI connectivity, database, Git, and terminal size."""
+    import shutil
+    import subprocess
+
+    settings = get_settings(demo_mode=False)
+    checks: list[tuple[str, str, str]] = []  # (name, status ok|warn|fail, detail)
+
+    if not json_output:
+        console.print()
+        console.print(Rule(f"[bold {onboarding.ACCENT}]Pulse Doctor[/bold {onboarding.ACCENT}] · System & API Health Checklist", style=onboarding.BORDER, align="left"))
+
+    with onboarding.LiveChecklist(console if not json_output else Console(file=sys.stderr)) as cl:
+        # 1. PayPal credentials & API
+        idx_cred = cl.start_step("PayPal credentials", "inspecting ~/.pulse/config.json...")
+        if settings.has_paypal_credentials:
+            detail_cred = f"mode {settings.paypal_mode}; config {GLOBAL_CONFIG_FILE}"
+            cl.finish_step(idx_cred, "ok", detail_cred)
+            checks.append(("PayPal credentials", "ok", detail_cred))
+
+            idx_api = cl.start_step("PayPal API", "verifying OAuth2 token...")
+            if offline:
+                cl.finish_step(idx_api, "warn", "skipped (--offline)")
+                checks.append(("PayPal API", "warn", "skipped (--offline)"))
+            else:
+                res = PayPalClient(settings).authenticate(force_refresh=True)
+                if res.authenticated:
+                    d_api = f"authenticated in {res.latency_ms:.0f} ms"
+                    cl.finish_step(idx_api, "ok", d_api)
+                    checks.append(("PayPal API", "ok", d_api))
+                else:
+                    d_api = f"{res.error}. Run `pp setup`."
+                    cl.finish_step(idx_api, "fail", d_api)
+                    checks.append(("PayPal API", "fail", d_api))
+        else:
+            d_cred = "not set. Run `pp setup` or try `pp demo`."
+            cl.finish_step(idx_cred, "warn", d_cred)
+            checks.append(("PayPal credentials", "warn", d_cred))
+
+        # 2. Pulse AI
+        idx_ai = cl.start_step("Pulse AI", "probing AI copilot provider...")
+        if settings.has_ai_credentials:
+            provider = settings.active_ai_provider
+            if offline:
+                d_ai = f"{provider} configured; skipped (--offline)"
+                cl.finish_step(idx_ai, "warn", d_ai)
+                checks.append(("Pulse AI", "warn", d_ai))
+            else:
+                ping = verify_groq_connection(settings)
+                if ping.connected:
+                    d_ai = f"{provider} {ping.model} ({ping.latency_ms:.0f} ms)"
+                    cl.finish_step(idx_ai, "ok", d_ai)
+                    checks.append(("Pulse AI", "ok", d_ai))
+                else:
+                    d_ai = f"{provider}: {ping.error}. Local engine active."
+                    cl.finish_step(idx_ai, "warn", d_ai)
+                    checks.append(("Pulse AI", "warn", d_ai))
+        else:
+            d_ai = "no key set. Local offline engine active."
+            cl.finish_step(idx_ai, "warn", d_ai)
+            checks.append(("Pulse AI", "warn", d_ai))
+
+        # 3. Local ledger
+        idx_db = cl.start_step("Local ledger", "querying SQLite dual-engine store...")
+        try:
+            PulseStore(settings.db_path, settings=settings).get_dashboard_summary()
+            d_db = str(settings.db_path)
+            cl.finish_step(idx_db, "ok", d_db)
+            checks.append(("Local ledger", "ok", d_db))
+        except Exception as exc:  # noqa: BLE001
+            d_db = f"{exc}"
+            cl.finish_step(idx_db, "fail", d_db)
+            checks.append(("Local ledger", "fail", d_db))
+
+        # 4. Git
+        idx_git = cl.start_step("Git", "checking repository work-tree...")
+        if shutil.which("git"):
+            inside = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True
+            ).returncode == 0
+            d_git = "repository detected" if inside else "not in a Git repo. `pp init` links releases."
+            st_git = "ok" if inside else "warn"
+            cl.finish_step(idx_git, st_git, d_git)
+            checks.append(("Git", st_git, d_git))
+        else:
+            d_git = "git not found. Release telemetry needs Git."
+            cl.finish_step(idx_git, "warn", d_git)
+            checks.append(("Git", "warn", d_git))
+
+        # 5. Terminal size
+        idx_term = cl.start_step("Terminal size", "measuring viewport dimensions...")
+        size = shutil.get_terminal_size()
+        st_term = "ok" if size.columns >= 80 and size.lines >= 24 else "warn"
+        d_term = f"{size.columns}x{size.lines} (80x24 minimum for `pp tui`)"
+        cl.finish_step(idx_term, st_term, d_term)
+        checks.append(("Terminal size", st_term, d_term))
+
+    failed_creds = any(name == "PayPal API" and s == "fail" for name, s, _ in checks)
+    failed = any(s == "fail" for _, s, _ in checks)
+    if json_output:
+        sys.stdout.write(json.dumps({"ok": not failed, "checks": [{"name": n, "status": s, "detail": d} for n, s, d in checks]}, indent=2) + "\n")
+    if failed_creds:
+        raise typer.Exit(code=EX_NOPERM)
+    if failed:
+        raise typer.Exit(code=EX_UNAVAILABLE)
 
 
 @app.command("tui")
@@ -1273,19 +2235,26 @@ def cmd_tui(
             console.print(
                 Panel.fit(
                     "[bold #58a6ff]PayPal Pulse (`pp tui`)[/bold #58a6ff]\n"
-                    "[dim]No active PayPal credentials detected in ~/.pulse/config.json or .env[/dim]\n\n"
-                    "Select how you want to launch:\n"
-                    "  [bold cyan][1][/bold cyan] Launch Instant Demo Mode (Zero Credentials / Explore Now)\n"
-                    "  [bold cyan][2][/bold cyan] Configure Live Credentials (pp setup)\n"
-                    "  [bold cyan][3][/bold cyan] Exit",
+                    "[dim]No PayPal credentials found in ~/.pulse/config.json or .env[/dim]",
                     border_style="#58a6ff",
                 )
             )
-            choice = typer.prompt("Select option", default="1").strip()
-            if choice == "2":
-                cmd_setup()
-                return
-            elif choice == "3":
+            choice = onboarding.select(
+                "How do you want to launch?",
+                [
+                    ("Instant demo (no credentials)", "demo"),
+                    ("Connect PayPal credentials (pp setup)", "setup"),
+                    ("Exit", "exit"),
+                ],
+                default="demo",
+            )
+            if choice == "setup":
+                run_setup_wizard(offer_tui=False)
+                settings = get_settings(demo_mode=False)
+                if not settings.has_paypal_credentials:
+                    return
+                demo = False
+            elif choice == "exit":
                 return
             else:
                 demo = True
@@ -1307,7 +2276,10 @@ def cmd_tui(
 def cmd_mcp(
     demo: bool = typer.Option(False, "--demo", help="Run MCP server against isolated demo database"),
 ) -> None:
-    """Run PayPal Pulse as a Model Context Protocol (MCP) server over stdio for Claude, Cursor, and AI agents."""
+    """Run PayPal Pulse as a Model Context Protocol (MCP) server over stdio for AI hosts (Antigravity, Claude, Cursor).
+    
+    Listens on stdin for machine-readable JSON-RPC 2.0 messages. To connect, add to your MCP client config.
+    """
     from pulse.mcp_server import run_mcp_stdio
 
     run_mcp_stdio(demo_mode=demo)

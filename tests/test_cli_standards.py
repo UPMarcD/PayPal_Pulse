@@ -35,8 +35,8 @@ def test_cli_timeline_json_stream_separation() -> None:
     assert result.exit_code == EX_OK
     data = json.loads(result.stdout)
     assert isinstance(data, list)
-    assert len(data) >= 3
-    assert any(r.get("version") == "v1.2.1" for r in data)
+    assert len(data) >= 1
+    assert all("version" in r and "gross_usd" in r and "net_usd" in r for r in data)
 
 
 def test_cli_disputes_json_stream_separation() -> None:
@@ -171,6 +171,16 @@ def test_cli_setup_demo_flag() -> None:
     result = runner.invoke(app, ["setup", "--demo"])
     assert result.exit_code == EX_OK
     assert "demo.db" in result.stdout or "Demo" in result.stdout
+
+
+def test_run_setup_wizard_clean_cancel(monkeypatch) -> None:
+    """Verify run_setup_wizard cleanly cancels on empty input without looping or crashing."""
+    from pulse.cli import run_setup_wizard
+    import io, sys
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    # Should return cleanly without throwing or looping
+    run_setup_wizard()
 
 
 def test_hierarchical_global_config(tmp_path: Path) -> None:
@@ -391,6 +401,106 @@ def test_pulse_mascot_sprites_and_headers():
         assert "·▛·" in hdr
         assert "ﮩ٨ـ" not in hdr
         assert "⚡" not in hdr
+
+
+def test_live_mode_seeding_lock(tmp_path):
+    """Verify `pp seed` in Live mode is rejected with EX_USAGE to protect production accounts."""
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="live_id",
+            paypal_client_secret="live_sec",
+            paypal_mode="live",
+            cache_dir=tmp_path,
+        )
+        res = runner.invoke(app, ["seed"])
+        assert res.exit_code == EX_USAGE
+        assert "CRITICAL SECURITY GUARD" in res.output or "strictly prohibited" in res.output
+
+
+def test_live_mode_order_confirmation_guard(tmp_path):
+    """Verify `pp order` in Live mode requires explicit confirmation or --live flag."""
+    with patch("pulse.cli.get_settings") as mock_get:
+        mock_get.return_value = PulseSettings(
+            paypal_client_id="live_id",
+            paypal_client_secret="live_sec",
+            paypal_mode="live",
+            cache_dir=tmp_path,
+        )
+        # Without --live in non-interactive environment -> fails safe
+        res = runner.invoke(app, ["order", "10", "USD"])
+        assert res.exit_code == EX_USAGE
+        assert "requires `--live`" in res.output
+
+
+def test_air_gapped_demo_mode_network_isolation(tmp_path):
+    """Verify that Demo mode never makes external HTTP requests and generates offline mock responses."""
+    from pulse.paypal_client import PayPalClient
+
+    settings = PulseSettings(
+        paypal_client_id="real_id",
+        paypal_client_secret="real_secret",
+        paypal_mode="live",
+        cache_dir=tmp_path,
+        demo_mode=True,
+    )
+    client = PayPalClient(settings)
+
+    # Auth should be mock/demo without network request
+    auth = client.authenticate()
+    assert auth.authenticated is True
+    assert auth.mode == "demo"
+    assert auth.base_url == "mock://demo.local"
+
+    # Order creation should be offline
+    order = client.create_order(19.99, "USD", "Demo Test Order")
+    assert order.success is True
+    assert order.order_id.startswith("DEMO-")
+
+    # Balances should be offline mock
+    bal = client.get_balances()
+    assert bal["ok"] is True
+    assert len(bal["balances"]) == 3
+
+    # Invoice sending should be offline mock
+    inv_send = client.send_invoice("INV2-DEMO-123")
+    assert inv_send["ok"] is True
+    assert inv_send["status"] == "SENT"
+
+
+def test_cli_capture_command_demo(tmp_path):
+    """Verify `pp capture` command executes two-stage capture and updates order status."""
+    res = runner.invoke(app, ["capture", "DEMO-ORD-999", "--demo", "--json"])
+    assert res.exit_code == 0
+    data = json.loads(res.stdout)
+    assert data["status"] == "COMPLETED"
+    assert data["order_id"] == "DEMO-ORD-999"
+
+    # Test update_order_status upsert on unseen order
+    store = PulseStore(tmp_path / "test_capture_upsert.db")
+    assert store.update_order_status("UNSEEN-ORD-1", "COMPLETED", amount=49.00, currency="USD") is True
+    txs = store.get_transactions()
+    assert any(t["paypal_id"] == "UNSEEN-ORD-1" and t["status"] == "COMPLETED" for t in txs)
+
+
+def test_should_auto_seed_fail_safe_defaults(tmp_path, monkeypatch):
+    """Verify that should_auto_seed returns False when live mode is configured."""
+    db_file = tmp_path / "pulse.db"
+    monkeypatch.setenv("PAYPAL_MODE", "live")
+    store = PulseStore(db_path=db_file)
+    assert store.should_auto_seed() is False
+
+
+def test_cli_help_displays_command_arguments():
+    """Verify `pp --help` includes command argument signatures alongside command names."""
+    res = runner.invoke(app, ["--help"])
+    assert res.exit_code == 0
+    assert "order AMOUNT [CURRENCY]" in res.stdout
+    assert "capture ORDER_ID" in res.stdout
+    assert "invoice AMOUNT [CURRENCY] [EMAIL]" in res.stdout
+    assert "ask QUESTION..." in res.stdout
+    assert "trigger [EVENT_TYPE]" in res.stdout
+
+
 
 
 

@@ -22,3 +22,17 @@ build/
 # Internal Docs & Agent Operating Guidelines (Private / Not in Public Repo)
 AGENTS.md
 docs/
+.agents/
+
+# Video, audio, demo production assets, and external tooling
+assets_demo/
+remotion_pulse/
+hyperframes_pulse/
+competitions/
+scripts/
+*.mp4
+*.webm
+*.mov
+*.mp3
+*.wav
+

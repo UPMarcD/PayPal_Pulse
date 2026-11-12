@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import sqlite3
 import subprocess
@@ -19,7 +20,71 @@ FX_TO_USD = {
     "EUR": 1.09,
     "PHP": 0.0175,
     "GBP": 1.28,
+    "CAD": 0.72,
+    "AUD": 0.66,
+    "JPY": 0.0065,
+    "SGD": 0.75,
+    "HKD": 0.128,
+    "NZD": 0.60,
+    "CHF": 1.13,
+    "SEK": 0.093,
+    "NOK": 0.091,
+    "DKK": 0.146,
+    "PLN": 0.25,
+    "CZK": 0.043,
+    "HUF": 0.0027,
+    "ILS": 0.27,
+    "MXN": 0.050,
+    "BRL": 0.175,
+    "MYR": 0.225,
+    "TWD": 0.031,
+    "THB": 0.029,
+    "INR": 0.0119,
+    "CNY": 0.138,
 }
+
+CURRENCY_SYMBOLS = {
+    "USD": "$",
+    "EUR": "€",
+    "PHP": "₱",
+    "GBP": "£",
+    "CAD": "CA$",
+    "AUD": "A$",
+    "JPY": "¥",
+    "SGD": "S$",
+    "HKD": "HK$",
+    "NZD": "NZ$",
+    "CHF": "CHF ",
+    "SEK": "kr ",
+    "NOK": "kr ",
+    "DKK": "kr ",
+    "PLN": "zł",
+    "CZK": "Kč ",
+    "HUF": "Ft ",
+    "ILS": "₪",
+    "MXN": "MX$",
+    "BRL": "R$",
+    "MYR": "RM",
+    "TWD": "NT$",
+    "THB": "฿",
+    "INR": "₹",
+    "CNY": "¥",
+}
+
+
+ZERO_DECIMAL_CURRENCIES = {"JPY", "HUF", "TWD"}
+
+
+def format_currency_amount(amount: float, currency: str) -> str:
+    """Format numeric amount according to PayPal REST API decimal rules.
+    
+    Zero-decimal currencies (JPY, HUF, TWD) must NOT include decimal fractions.
+    All other currencies require exactly two decimal places (e.g. 14.99).
+    """
+    cur = currency.upper().strip()
+    if cur in ZERO_DECIMAL_CURRENCIES:
+        return str(int(round(amount)))
+    return f"{amount:.2f}"
 
 
 def compute_paypal_fee(amount: float, currency: str, cross_border: bool = True) -> float:
@@ -31,18 +96,230 @@ def compute_paypal_fee(amount: float, currency: str, cross_border: bool = True) 
         "EUR": 0.39,
         "PHP": 25.00,
         "GBP": 0.39,
+        "CAD": 0.59,
+        "AUD": 0.59,
+        "JPY": 40.00,
+        "SGD": 0.50,
+        "HKD": 2.35,
+        "NZD": 0.45,
+        "CHF": 0.55,
+        "SEK": 3.25,
+        "NOK": 2.80,
+        "DKK": 2.60,
+        "PLN": 1.35,
+        "CZK": 10.00,
+        "HUF": 90.00,
+        "ILS": 1.20,
+        "MXN": 4.00,
+        "BRL": 0.60,
+        "MYR": 2.00,
+        "TWD": 10.00,
+        "THB": 11.00,
+        "INR": 3.00,
+        "CNY": 2.50,
     }
     fixed = fixed_map.get(cur, 0.49)
+    if cur in ZERO_DECIMAL_CURRENCIES:
+        fee = float(round(amount * rate + fixed))
+        return min(fee, float(round(amount * 0.45)))
     fee = round(amount * rate + fixed, 2)
     return min(fee, round(amount * 0.45, 2))
+
+
+def parse_release_version(custom_id: str | None, default: str = "v0.1.0") -> str:
+    """Extract release version from custom_id metadata (e.g. 'release:v1.3.0', JSON, or pipe format)."""
+    if not custom_id:
+        return default
+    text = str(custom_id).strip()
+    if not text:
+        return default
+
+    # 1. Prefix format: "release:v1.3.0" or "release:v1.3.0|US|SKU"
+    if text.lower().startswith("release:"):
+        remainder = text[8:].strip()
+        ver = remainder.split("|")[0].split()[0].strip()
+        if ver:
+            return ver
+
+    # 2. JSON format: {"v": "v1.3.0"} or {"version": "v1.3.0"}
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            import json
+
+            data = json.loads(text)
+            for k in ("v", "version", "release", "release_version", "tag"):
+                if k in data and data[k]:
+                    return str(data[k]).strip()
+        except Exception:
+            pass
+
+    # 3. Delimited pipe format: "v1.2.1|US|PulseCore Pro"
+    if "|" in text:
+        ver = text.split("|")[0].strip()
+        if ver:
+            return ver
+
+    # 4. Direct semver/git tag pattern (e.g. "v1.3.0" or "1.3.0")
+    parts = text.split()
+    first_token = parts[0] if parts else text
+    if first_token.startswith("v") and len(first_token) > 1 and any(c.isdigit() for c in first_token):
+        return first_token
+
+    return first_token or default
+
+
+def detect_project_context(cwd: Path | None = None) -> dict[str, Any]:
+    """Inspect directory for .pulse.json, git metadata, and language package descriptors."""
+    target_dir = cwd or Path.cwd()
+    info: dict[str, Any] = {
+        "project_name": target_dir.name,
+        "version": "v0.1.0",
+        "default_currency": "USD",
+        "default_sku": f"{target_dir.name} Pro",
+        "default_price": 19.99,
+        "git_repo": False,
+        "git_branch": None,
+        "git_commit": None,
+        "git_tag": None,
+        "config_file": None,
+        "package_type": None,
+    }
+
+    # 1. Inspect .pulse.json in target_dir or parents
+    pulse_cfg = target_dir / ".pulse.json"
+    if not pulse_cfg.exists():
+        for p in target_dir.parents:
+            cand = p / ".pulse.json"
+            if cand.exists():
+                pulse_cfg = cand
+                break
+    has_custom_sku = False
+    if pulse_cfg.exists():
+        try:
+            import json
+
+            data = json.loads(pulse_cfg.read_text(encoding="utf-8-sig"))
+            info["config_file"] = str(pulse_cfg)
+            if "project_name" in data and data["project_name"]:
+                info["project_name"] = str(data["project_name"])
+            if "version" in data and data["version"]:
+                info["version"] = str(data["version"])
+            if "default_currency" in data and data["default_currency"]:
+                info["default_currency"] = str(data["default_currency"]).upper()
+            if "default_sku" in data and data["default_sku"]:
+                info["default_sku"] = str(data["default_sku"])
+                has_custom_sku = True
+            if "default_price" in data and data["default_price"] is not None:
+                try:
+                    info["default_price"] = float(data["default_price"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # 2. Inspect Git repository
+    try:
+        proc_rev = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(target_dir),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if proc_rev.returncode == 0 and proc_rev.stdout.strip() == "true":
+            info["git_repo"] = True
+            proc_branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=str(target_dir),
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if proc_branch.returncode == 0 and proc_branch.stdout.strip():
+                info["git_branch"] = proc_branch.stdout.strip()
+
+            proc_sha = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(target_dir),
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if proc_sha.returncode == 0 and proc_sha.stdout.strip():
+                info["git_commit"] = proc_sha.stdout.strip()
+
+            proc_tag = subprocess.run(
+                ["git", "describe", "--tags", "--always"],
+                cwd=str(target_dir),
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            if proc_tag.returncode == 0 and proc_tag.stdout.strip():
+                tag_out = proc_tag.stdout.strip()
+                info["git_tag"] = tag_out
+                if info["version"] == "v0.1.0" or not info.get("config_file"):
+                    info["version"] = tag_out
+    except Exception:
+        pass
+
+    # 3. Detect package ecosystem
+    pkg_json = target_dir / "package.json"
+    if pkg_json.exists():
+        info["package_type"] = "npm"
+        try:
+            import json
+
+            pdata = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
+            if "name" in pdata and (info["project_name"] == target_dir.name or not info.get("config_file")):
+                info["project_name"] = str(pdata["name"])
+            if "version" in pdata and not info.get("config_file"):
+                ver = str(pdata["version"])
+                info["version"] = ver if ver.startswith("v") else f"v{ver}"
+        except Exception:
+            pass
+
+    pyproj = target_dir / "pyproject.toml"
+    if pyproj.exists():
+        info["package_type"] = "python"
+        try:
+            for line in pyproj.read_text(encoding="utf-8-sig").splitlines():
+                if line.strip().startswith("version") and "=" in line:
+                    ver = line.split("=")[1].strip().strip('"').strip("'")
+                    if ver and not info.get("config_file"):
+                        info["version"] = ver if ver.startswith("v") else f"v{ver}"
+                        break
+        except Exception:
+            pass
+
+    cargo = target_dir / "Cargo.toml"
+    if cargo.exists():
+        info["package_type"] = "rust"
+
+    gomod = target_dir / "go.mod"
+    if gomod.exists():
+        info["package_type"] = "go"
+
+    if not has_custom_sku:
+        info["default_sku"] = f"{info['project_name']} Pro"
+
+    return info
 
 
 class PulseStore:
     """SQLite telemetry & dual-engine ledger store."""
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        settings = get_settings()
-        self.db_path = db_path or settings.db_path
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        settings: PulseSettings | None = None,
+    ) -> None:
+        self.settings = settings or get_settings()
+        self.db_path = db_path or self.settings.db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -157,6 +434,48 @@ class PulseStore:
             row = conn.execute("SELECT COUNT(*) AS cnt FROM releases").fetchone()
             return bool(row and row["cnt"] > 0)
 
+    def has_live_data(self) -> bool:
+        """Check if transactions table has any recorded orders or webhook captures."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS cnt FROM transactions").fetchone()
+            return bool(row and row["cnt"] > 0)
+
+    def is_clean_mode(self) -> bool:
+        """Check if auto-seeding is suppressed to preserve a pristine, unseeded slate."""
+        return self.get_meta("clean_mode") == "1"
+
+    def set_clean_mode(self, enabled: bool = True) -> None:
+        """Toggle clean mode to suppress or permit synthetic auto-seeding."""
+        self.set_meta("clean_mode", "1" if enabled else "0")
+
+    def should_auto_seed(self) -> bool:
+        """Determine if synthetic baseline data should be auto-seeded.
+
+        Returns False if:
+        - Store is already seeded, in clean mode, or contains live user data.
+        - Environment is configured for Live/Production mode (strict fail-safe default against mock pollution),
+          unless explicitly operating on an isolated demo database.
+        """
+        if self.db_path.name == "demo.db":
+            return not (self.is_seeded() or self.is_clean_mode())
+        current_mode = os.getenv("PAYPAL_MODE", getattr(self.settings, "paypal_mode", "sandbox")).lower()
+        if current_mode == "live":
+            return False
+        if self.is_seeded() or self.is_clean_mode() or self.has_live_data():
+            return False
+        return True
+
+    def reset(self, mark_clean: bool = True) -> None:
+        """Wipe all telemetry tables cleanly without deleting the database file."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM releases")
+            conn.execute("DELETE FROM transactions")
+            conn.execute("DELETE FROM disputes")
+            conn.execute("DELETE FROM daily_metrics")
+            conn.commit()
+        if mark_clean:
+            self.set_clean_mode(True)
+
     def set_meta(self, key: str, value: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -173,14 +492,20 @@ class PulseStore:
     def record_live_order(
         self,
         order: PayPalOrderResult,
-        release_version: str = "v1.2.1",
+        release_version: str | None = None,
         country_code: str = "US",
-        platform_sku: str = "Ubuntu Linux 24.04 (CLI)",
+        platform_sku: str | None = None,
         device_model: str | None = None,
     ) -> dict[str, Any]:
         """Insert a freshly created live PayPal Sandbox order into the instant local ledger."""
         cur = order.currency.upper()
-        effective_sku = device_model or platform_sku
+        ctx = detect_project_context()
+        default_sku = ctx.get("default_sku") or "PulseCore Pro"
+        effective_release = release_version or ctx.get("version") or "v1.2.1"
+        legacy_default = "Ubuntu Linux 24.04 (CLI)"
+        clean_model = device_model if device_model and device_model != legacy_default else None
+        clean_platform = platform_sku if platform_sku and platform_sku != legacy_default else None
+        effective_sku = clean_model or clean_platform or default_sku
         fx = FX_TO_USD.get(cur, 1.0)
         cross_border = country_code.upper() != "US" or cur != "USD"
         fee = compute_paypal_fee(order.amount, cur, cross_border=cross_border)
@@ -217,22 +542,51 @@ class PulseStore:
                     usd_gross,
                     usd_fee,
                     usd_net,
-                    release_version,
+                    effective_release,
                     country_code.upper(),
-                    order.description or f"PulseCore Pro ({release_version})",
+                    order.description or f"{effective_sku} ({effective_release})",
                     effective_sku,
                     order.status or "COMPLETED",
                     order.approve_url,
                 ),
             )
             if not existing:
+                # Dynamic release upsert: ensure release exists in releases table with real Git metadata if available
+                cur_rel = conn.execute("SELECT version FROM releases WHERE version = ?", (effective_release,)).fetchone()
+                if not cur_rel:
+                    now_ymd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    tag_meta = self._discover_git_tag_metadata().get(effective_release, {})
+                    commit_sha = tag_meta.get("commit", "HEAD")
+                    rel_date = tag_meta.get("date", now_ymd)
+                    rel_title = (
+                        f"{effective_release} — {tag_meta['subject']}"
+                        if tag_meta.get("subject")
+                        else f"{effective_release} (Release)"
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO releases (
+                            version, title, released_at, git_commit, installs, active_users,
+                            trial_starts, paid_conversions, conversion_rate, gross_usd,
+                            fees_usd, net_usd, refund_count, dispute_count, status_badge, ai_diagnostic
+                        ) VALUES (?, ?, ?, ?, 1, 1, 1, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 'ACTIVE', 'Dynamic release created via live PayPal transaction.')
+                        """,
+                        (effective_release, rel_title, rel_date, commit_sha),
+                    )
+
                 # Update release rollup and recalculate conversion_rate
                 conn.execute(
                     """
                     UPDATE releases
                     SET paid_conversions = paid_conversions + 1,
+                        installs = CASE WHEN installs <= paid_conversions THEN paid_conversions + 1 ELSE installs END,
+                        active_users = CASE WHEN active_users <= paid_conversions THEN paid_conversions + 1 ELSE active_users END,
                         conversion_rate = ROUND(
-                            ((paid_conversions + 1) * 100.0) / CASE WHEN installs > 0 THEN installs ELSE 1 END,
+                            ((paid_conversions + 1) * 100.0) / CASE
+                                WHEN installs <= paid_conversions THEN paid_conversions + 1
+                                WHEN installs > 0 THEN installs
+                                ELSE 1
+                            END,
                             2
                         ),
                         gross_usd = ROUND(gross_usd + ?, 2),
@@ -240,21 +594,57 @@ class PulseStore:
                         net_usd = ROUND(net_usd + ?, 2)
                     WHERE version = ?
                     """,
-                    (usd_gross, usd_fee, usd_net, release_version),
+                    (usd_gross, usd_fee, usd_net, effective_release),
                 )
-                # Update today's row in daily_metrics so 14-day sparkline & bar chart update instantaneously
+                # Update today's row in daily_metrics (or insert on clean board) so 14-day sparkline & bar chart update instantaneously
                 today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                conn.execute(
-                    """
-                    UPDATE daily_metrics
-                    SET paid_orders = paid_orders + 1,
-                        gross_usd = ROUND(gross_usd + ?, 2),
-                        fees_usd = ROUND(fees_usd + ?, 2),
-                        net_usd = ROUND(net_usd + ?, 2)
-                    WHERE day_date = (SELECT MAX(day_date) FROM daily_metrics WHERE day_date <= ?)
-                    """,
-                    (usd_gross, usd_fee, usd_net, today_str),
-                )
+                existing_day = conn.execute(
+                    "SELECT day_date FROM daily_metrics WHERE day_date = ?",
+                    (today_str,),
+                ).fetchone()
+                if existing_day:
+                    conn.execute(
+                        """
+                        UPDATE daily_metrics
+                        SET paid_orders = paid_orders + 1,
+                            installs = CASE WHEN installs <= paid_orders THEN paid_orders + 1 ELSE installs END,
+                            gross_usd = ROUND(gross_usd + ?, 2),
+                            fees_usd = ROUND(fees_usd + ?, 2),
+                            net_usd = ROUND(net_usd + ?, 2),
+                            release_version = ?
+                        WHERE day_date = ?
+                        """,
+                        (usd_gross, usd_fee, usd_net, effective_release, today_str),
+                    )
+                else:
+                    max_day_row = conn.execute(
+                        "SELECT MAX(day_date) AS max_d FROM daily_metrics WHERE day_date <= ?",
+                        (today_str,),
+                    ).fetchone()
+                    seeded_flag = conn.execute(
+                        "SELECT value FROM meta WHERE key = 'last_seeded_at'"
+                    ).fetchone()
+                    if max_day_row and max_day_row["max_d"] and seeded_flag is not None and not self.is_clean_mode():
+                        conn.execute(
+                            """
+                            UPDATE daily_metrics
+                            SET paid_orders = paid_orders + 1,
+                                gross_usd = ROUND(gross_usd + ?, 2),
+                                fees_usd = ROUND(fees_usd + ?, 2),
+                                net_usd = ROUND(net_usd + ?, 2)
+                            WHERE day_date = ?
+                            """,
+                            (usd_gross, usd_fee, usd_net, max_day_row["max_d"]),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO daily_metrics (
+                                day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
+                            ) VALUES (?, 1, 1, ?, ?, ?, 0, ?)
+                            """,
+                            (today_str, usd_gross, usd_fee, usd_net, effective_release),
+                        )
             conn.commit()
 
         return {
@@ -264,27 +654,90 @@ class PulseStore:
             "net": net,
             "currency": cur,
             "usd_net": usd_net,
-            "release_version": release_version,
+            "release_version": effective_release,
             "approve_url": order.approve_url,
         }
 
+    def update_order_status(
+        self,
+        paypal_id: str,
+        status: str,
+        amount: float = 0.0,
+        currency: str = "USD",
+        release_version: str = "v1.2.1",
+        platform_sku: str = "Captured Order",
+    ) -> bool:
+        """Update transaction status or upsert captured order into ledger."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE transactions SET status = ? WHERE paypal_id = ?",
+                (status, paypal_id),
+            )
+            if cursor.rowcount > 0:
+                conn.commit()
+                return True
+
+            # If not previously recorded, upsert captured order into transactions
+            if amount > 0:
+                cur = currency.upper()
+                fx = FX_TO_USD.get(cur, 1.0)
+                fee = compute_paypal_fee(amount, cur, cross_border=True)
+                net = round(amount - fee, 2)
+                now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                conn.execute(
+                    """
+                    INSERT INTO transactions (
+                        paypal_id, created_at, gross_amount, fee_amount, net_amount,
+                        currency, usd_gross, usd_fee, usd_net, release_version,
+                        country_code, product_name, platform_sku, status,
+                        is_live_sandbox, approve_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '')
+                    ON CONFLICT(paypal_id) DO UPDATE SET status = excluded.status
+                    """,
+                    (
+                        paypal_id,
+                        now_str,
+                        amount,
+                        fee,
+                        net,
+                        cur,
+                        round(amount * fx, 2),
+                        round(fee * fx, 2),
+                        round(net * fx, 2),
+                        release_version,
+                        "US",
+                        "PayPal Checkout Order",
+                        platform_sku,
+                        status,
+                    ),
+                )
+                conn.commit()
+                return True
+            conn.commit()
+            return False
+
     def record_webhook_event(self, event_data: dict[str, Any]) -> dict[str, Any]:
         """Ingest a PayPal Webhook event payload (live or triggered) into the SQLite ledger."""
-        event_type = event_data.get("event_type", "").upper()
+        event_type = event_data.get("event_type", "").upper().replace("_", ".")
         resource = event_data.get("resource", {})
+
+        ctx = detect_project_context()
+        default_rel = ctx.get("version") or "v1.2.1"
+        default_sku = ctx.get("default_sku") or "PulseCore Pro"
+        default_cur = ctx.get("default_currency") or "USD"
 
         if event_type in ("PAYMENT.CAPTURE.COMPLETED", "CHECKOUT.ORDER.APPROVED"):
             order_id = resource.get("id", f"ORD-WH-{int(time.time())}")
             amount_dict = resource.get("amount") or resource.get("dispute_amount") or {}
             if not amount_dict and "seller_receivable_breakdown" in resource:
                 amount_dict = resource["seller_receivable_breakdown"].get("gross_amount", {})
-            amt = float(amount_dict.get("value", 19.99))
-            cur = str(amount_dict.get("currency_code", "USD")).upper()
-            custom_id = resource.get("custom_id", "v1.2.1|US|PulseCore Pro")
-            parts = custom_id.split("|")
-            release_ver = parts[0] if len(parts) > 0 and parts[0] else "v1.2.1"
+            amt = float(amount_dict.get("value", ctx.get("default_price", 19.99)))
+            cur = str(amount_dict.get("currency_code", default_cur)).upper()
+            raw_custom = resource.get("custom_id")
+            release_ver = parse_release_version(raw_custom, default=default_rel)
+            parts = str(raw_custom).split("|") if raw_custom else []
             country = parts[1] if len(parts) > 1 and parts[1] else "US"
-            sku = parts[2] if len(parts) > 2 and parts[2] else "PulseCore Pro"
+            sku = parts[2] if len(parts) > 2 and parts[2] else default_sku
 
             order_res = PayPalOrderResult(
                 success=True,
@@ -305,16 +758,21 @@ class PulseStore:
             dispute_id = resource.get("dispute_id", f"PP-D-{int(time.time())}-SIM")
             amount_dict = resource.get("dispute_amount", {})
             amt = float(amount_dict.get("value", 29.99))
-            cur = str(amount_dict.get("currency_code", "USD")).upper()
+            cur = str(amount_dict.get("currency_code", default_cur)).upper()
             buyer_country = resource.get("buyer_country", "US")
             buyer_email = resource.get("buyer_email", f"buyer-{dispute_id.lower()}@example.com")
-            release_ver = resource.get("release_version", "v1.2.1")
+            raw_custom = resource.get("custom_id", default_sku)
+            release_ver = resource.get("release_version") or parse_release_version(raw_custom, default=default_rel)
+            parts = str(raw_custom).split("|") if raw_custom else []
+            sku = parts[2] if len(parts) > 2 and parts[2] else str(raw_custom)
             desc = resource.get("description", "Dispute triggered via webhook event.")
-            sku = resource.get("custom_id", "PulseCore Pro")
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             due_str = (datetime.now(timezone.utc) + timedelta(days=10)).strftime("%Y-%m-%d")
 
             with self._connect() as conn:
+                existing_disp = conn.execute(
+                    "SELECT status FROM disputes WHERE dispute_id = ?", (dispute_id,)
+                ).fetchone()
                 conn.execute(
                     """
                     INSERT INTO disputes (
@@ -322,16 +780,89 @@ class PulseStore:
                         buyer_email, release_version, platform_sku, amount, currency,
                         due_date, reason, description, created_at
                     ) VALUES (?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, 'MERCHANDISE_OR_SERVICE_NOT_RECEIVED', ?, ?)
-                    ON CONFLICT(dispute_id) DO UPDATE SET status = 'OPEN'
+                    ON CONFLICT(dispute_id) DO UPDATE SET
+                        status = 'OPEN',
+                        release_version = excluded.release_version,
+                        amount = excluded.amount
                     """,
                     (dispute_id, f"TX-{dispute_id}", buyer_country, buyer_email, release_ver, sku, amt, cur, due_str, desc, now_str),
                 )
-                conn.execute(
-                    "UPDATE releases SET dispute_count = dispute_count + 1 WHERE version = ?",
-                    (release_ver,),
-                )
+                if not existing_disp or existing_disp["status"] != "OPEN":
+                    cur_rel = conn.execute("SELECT version FROM releases WHERE version = ?", (release_ver,)).fetchone()
+                    if not cur_rel:
+                        now_ymd = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        tag_meta = self._discover_git_tag_metadata().get(release_ver, {})
+                        commit_sha = tag_meta.get("commit", "HEAD")
+                        rel_date = tag_meta.get("date", now_ymd)
+                        rel_title = (
+                            f"{release_ver} — {tag_meta['subject']}"
+                            if tag_meta.get("subject")
+                            else f"{release_ver} (Release)"
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO releases (
+                                version, title, released_at, git_commit, installs, active_users,
+                                trial_starts, paid_conversions, conversion_rate, gross_usd,
+                                fees_usd, net_usd, refund_count, dispute_count, status_badge, ai_diagnostic
+                            ) VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 'DISPUTE RISK', ?)
+                            """,
+                            (
+                                release_ver,
+                                rel_title,
+                                rel_date,
+                                commit_sha,
+                                f"Alert: Open buyer dispute ({dispute_id}) recorded on {release_ver}.",
+                            ),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE releases
+                        SET dispute_count = dispute_count + 1,
+                            status_badge = 'DISPUTE RISK',
+                            ai_diagnostic = ?
+                        WHERE version = ?
+                        """,
+                        (f"Alert: Active buyer dispute ({dispute_id}) detected on release {release_ver}.", release_ver),
+                    )
+                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    existing_day = conn.execute(
+                        "SELECT day_date FROM daily_metrics WHERE day_date = ?",
+                        (today_str,),
+                    ).fetchone()
+                    if existing_day:
+                        conn.execute(
+                            "UPDATE daily_metrics SET disputes = disputes + 1 WHERE day_date = ?",
+                            (today_str,),
+                        )
+                    else:
+                        seeded_flag = conn.execute("SELECT value FROM meta WHERE key = 'last_seeded_at'").fetchone()
+                        max_day_row = conn.execute(
+                            "SELECT MAX(day_date) AS max_d FROM daily_metrics WHERE day_date <= ?",
+                            (today_str,),
+                        ).fetchone()
+                        if max_day_row and max_day_row["max_d"] and seeded_flag is not None and not self.is_clean_mode():
+                            conn.execute(
+                                "UPDATE daily_metrics SET disputes = disputes + 1 WHERE day_date = ?",
+                                (max_day_row["max_d"],),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO daily_metrics (
+                                    day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
+                                ) VALUES (?, 0, 0, 0.0, 0.0, 0.0, 1, ?)
+                                """,
+                                (today_str, release_ver),
+                            )
                 conn.commit()
-            return {"dispute_id": dispute_id, "status": "OPEN", "amount": amt, "currency": cur}
+            return {
+                "dispute_id": dispute_id,
+                "status": "OPEN",
+                "amount": amt,
+                "currency": cur,
+                "release_version": release_ver,
+            }
         elif event_type == "CUSTOMER.DISPUTE.RESOLVED":
             dispute_id = resource.get("dispute_id", "")
             if dispute_id:
@@ -345,7 +876,8 @@ class PulseStore:
         live_orders: list[PayPalOrderResult] | None = None,
         live_invoice: PayPalInvoiceResult | None = None,
     ) -> dict[str, Any]:
-        """Seed 30 days of universal indie software & micro-business history across 3 Git releases + real Sandbox orders."""
+        """Seed 30 days of universal software & business history across 3 Git releases + Sandbox orders."""
+        self.set_clean_mode(False)
         now = datetime.now(timezone.utc)
         live_orders = live_orders or []
 
@@ -658,8 +1190,72 @@ class PulseStore:
             rows = conn.execute(
                 "SELECT * FROM releases ORDER BY released_at ASC"
             ).fetchall()
+            # Aggregate actual live transactions by release_version to enrich metrics
+            txn_stats = {
+                r["release_version"]: dict(r)
+                for r in conn.execute(
+                    """
+                    SELECT release_version,
+                           COUNT(*) as paid_count,
+                           ROUND(SUM(usd_gross), 2) as sum_gross,
+                           ROUND(SUM(usd_fee), 2) as sum_fee,
+                           ROUND(SUM(usd_net), 2) as sum_net
+                    FROM transactions
+                    GROUP BY release_version
+                    """
+                ).fetchall()
+            }
+            # Aggregate open disputes by release_version
+            dispute_stats = {
+                r["release_version"]: int(r["open_cnt"] or 0)
+                for r in conn.execute(
+                    """
+                    SELECT release_version, COUNT(*) as open_cnt
+                    FROM disputes
+                    WHERE UPPER(status) = 'OPEN'
+                    GROUP BY release_version
+                    """
+                ).fetchall()
+            }
+
+        tag_meta_map = self._discover_git_tag_metadata() if include_git_tags else {}
         releases = [dict(r) for r in rows]
         for rel in releases:
+            ver = rel["version"]
+            # Enrich git commit and release date from local Git tag metadata if currently generic
+            if ver in tag_meta_map:
+                t_meta = tag_meta_map[ver]
+                if rel.get("git_commit") in (None, "", "HEAD") and t_meta.get("commit"):
+                    rel["git_commit"] = t_meta["commit"]
+                if t_meta.get("date"):
+                    rel["released_at"] = t_meta["date"]
+                if t_meta.get("subject") and rel.get("title", "").endswith("(Release)"):
+                    rel["title"] = f"{ver} — {t_meta['subject']}"
+
+            # Reconcile with transaction ledger if release gross is zero or out of sync
+            if ver in txn_stats and float(rel["gross_usd"] or 0.0) == 0.0:
+                rel["gross_usd"] = float(txn_stats[ver]["sum_gross"] or 0.0)
+                rel["fees_usd"] = float(txn_stats[ver]["sum_fee"] or 0.0)
+                rel["net_usd"] = float(txn_stats[ver]["sum_net"] or 0.0)
+                rel["paid_conversions"] = int(txn_stats[ver]["paid_count"] or 0)
+                if rel["installs"] < rel["paid_conversions"]:
+                    rel["installs"] = rel["paid_conversions"]
+                rel["conversion_rate"] = round(
+                    (rel["paid_conversions"] * 100.0) / max(rel["installs"], 1), 2
+                )
+                if rel["status_badge"] == "GIT TAG":
+                    rel["status_badge"] = "ACTIVE"
+                    rel["ai_diagnostic"] = "Active release receiving live PayPal transactions."
+
+            # Reconcile open dispute counts from disputes table
+            if ver in dispute_stats:
+                rel["dispute_count"] = max(int(rel.get("dispute_count") or 0), dispute_stats[ver])
+                if rel["dispute_count"] > 0 and rel.get("status_badge") in ("ACTIVE", "GIT TAG"):
+                    rel["status_badge"] = "DISPUTE RISK"
+                    rel["ai_diagnostic"] = (
+                        f"Alert: {rel['dispute_count']} open buyer dispute(s) detected on release {ver}."
+                    )
+
             gross = float(rel["gross_usd"] or 0.0)
             net = float(rel["net_usd"] or 0.0)
             fees = float(rel["fees_usd"] or 0.0)
@@ -670,60 +1266,173 @@ class PulseStore:
             known_versions = {r["version"] for r in releases}
             for tag in self._discover_git_tags():
                 if tag not in known_versions:
-                    releases.append(
-                        {
-                            "version": tag,
-                            "title": f"{tag} (Local Git Tag)",
-                            "released_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                            "git_commit": "HEAD",
-                            "installs": 0,
-                            "active_users": 0,
-                            "trial_starts": 0,
-                            "paid_conversions": 0,
-                            "conversion_rate": 0.0,
-                            "gross_usd": 0.0,
-                            "fees_usd": 0.0,
-                            "net_usd": 0.0,
-                            "net_margin_pct": 0.0,
-                            "fee_drag_pct": 0.0,
-                            "refund_count": 0,
-                            "dispute_count": 0,
-                            "status_badge": "GIT TAG",
-                            "ai_diagnostic": "Detected local Git tag in repository awaiting telemetry sync.",
-                        }
-                    )
+                    tag_stats = txn_stats.get(tag)
+                    disp_cnt = dispute_stats.get(tag, 0)
+                    t_meta = tag_meta_map.get(tag, {})
+                    t_commit = t_meta.get("commit", "HEAD")
+                    t_date = t_meta.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                    t_subj = t_meta.get("subject", "")
+                    if tag_stats or disp_cnt > 0:
+                        t_gross = float(tag_stats["sum_gross"] or 0.0) if tag_stats else 0.0
+                        t_fees = float(tag_stats["sum_fee"] or 0.0) if tag_stats else 0.0
+                        t_net = float(tag_stats["sum_net"] or 0.0) if tag_stats else 0.0
+                        t_paid = int(tag_stats["paid_count"] or 0) if tag_stats else 0
+                        badge = "DISPUTE RISK" if disp_cnt > 0 else ("ACTIVE" if t_gross > 0 else "GIT TAG")
+                        diag = (
+                            f"Alert: {disp_cnt} open buyer dispute(s) detected on release {tag}."
+                            if disp_cnt > 0
+                            else (
+                                "Local Git release with live PayPal transaction attribution."
+                                if t_gross > 0
+                                else "Detected local Git tag in repository awaiting telemetry sync."
+                            )
+                        )
+                        releases.append(
+                            {
+                                "version": tag,
+                                "title": f"{tag} — {t_subj}" if t_subj else f"{tag} (Local Git Release)",
+                                "released_at": t_date,
+                                "git_commit": t_commit,
+                                "installs": max(t_paid, 1) if t_paid > 0 else 0,
+                                "active_users": max(t_paid, 1) if t_paid > 0 else 0,
+                                "trial_starts": max(t_paid, 1) if t_paid > 0 else 0,
+                                "paid_conversions": t_paid,
+                                "conversion_rate": 100.0 if t_paid > 0 else 0.0,
+                                "gross_usd": t_gross,
+                                "fees_usd": t_fees,
+                                "net_usd": t_net,
+                                "net_margin_pct": round((t_net / t_gross) * 100, 1) if t_gross > 0 else 0.0,
+                                "fee_drag_pct": round((t_fees / t_gross) * 100, 1) if t_gross > 0 else 0.0,
+                                "refund_count": 0,
+                                "dispute_count": disp_cnt,
+                                "status_badge": badge,
+                                "ai_diagnostic": diag,
+                            }
+                        )
+                    else:
+                        releases.append(
+                            {
+                                "version": tag,
+                                "title": f"{tag} — {t_subj}" if t_subj else f"{tag} (Local Git Tag)",
+                                "released_at": t_date,
+                                "git_commit": t_commit,
+                                "installs": 0,
+                                "active_users": 0,
+                                "trial_starts": 0,
+                                "paid_conversions": 0,
+                                "conversion_rate": 0.0,
+                                "gross_usd": 0.0,
+                                "fees_usd": 0.0,
+                                "net_usd": 0.0,
+                                "net_margin_pct": 0.0,
+                                "fee_drag_pct": 0.0,
+                                "refund_count": 0,
+                                "dispute_count": 0,
+                                "status_badge": "GIT TAG",
+                                "ai_diagnostic": "Detected local Git tag in repository awaiting telemetry sync.",
+                            }
+                        )
         return releases
+
+    def _discover_git_tag_metadata(self) -> dict[str, dict[str, str]]:
+        """Discover local Git tags along with their commit SHA, creation date, and commit subject."""
+        if hasattr(self, "_git_tag_meta_cache") and self._git_tag_meta_cache is not None:
+            return self._git_tag_meta_cache
+
+        meta: dict[str, dict[str, str]] = {}
+        search_dirs = [Path.cwd(), PACKAGE_ROOT]
+
+        for d in search_dirs:
+            try:
+                proc_check = subprocess.run(
+                    ["git", "rev-parse", "--is-inside-work-tree"],
+                    cwd=str(d),
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if proc_check.returncode != 0 or proc_check.stdout.strip() != "true":
+                    continue
+
+                proc = subprocess.run(
+                    [
+                        "git",
+                        "for-each-ref",
+                        "--sort=creatordate",
+                        "--format=%(refname:short)|%(if)%(*objectname:short)%(then)%(*objectname:short)%(else)%(objectname:short)%(end)|%(creatordate:short)|%(contents:subject)",
+                        "refs/tags",
+                    ],
+                    cwd=str(d),
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    for line in proc.stdout.splitlines():
+                        line_str = line.strip()
+                        if not line_str:
+                            continue
+                        parts = line_str.split("|", 3)
+                        tag_name = parts[0].strip()
+                        commit_sha = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "HEAD"
+                        tag_date = parts[2].strip() if len(parts) > 2 and parts[2].strip() else ""
+                        subject = parts[3].strip() if len(parts) > 3 and parts[3].strip() else ""
+                        if tag_name and tag_name not in meta:
+                            meta[tag_name] = {
+                                "commit": commit_sha,
+                                "date": tag_date or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                                "subject": subject,
+                            }
+                # If we are inside an active Git repo in Path.cwd(), do not mix in PACKAGE_ROOT tags
+                break
+            except Exception:
+                pass
+
+        self._git_tag_meta_cache = meta
+        return self._git_tag_meta_cache
 
     def _discover_git_tags(self) -> list[str]:
         if hasattr(self, "_git_tags_cache") and self._git_tags_cache is not None:
             return self._git_tags_cache
-        try:
-            proc = subprocess.run(
-                ["git", "tag", "-l"],
-                cwd=str(PACKAGE_ROOT),
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                self._git_tags_cache = [
-                    line.strip() for line in proc.stdout.splitlines() if line.strip()
-                ]
-                return self._git_tags_cache
-        except Exception:
-            pass
-        self._git_tags_cache = []
+
+        meta = self._discover_git_tag_metadata()
+        tags: list[str] = list(meta.keys())
+
+        if not tags:
+            try:
+                proc_desc = subprocess.run(
+                    ["git", "describe", "--tags", "--always"],
+                    cwd=str(Path.cwd()),
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if proc_desc.returncode == 0 and proc_desc.stdout.strip():
+                    val = proc_desc.stdout.strip()
+                    if val and val not in tags:
+                        tags.append(val)
+            except Exception:
+                pass
+
+        self._git_tags_cache = tags
         return self._git_tags_cache
 
     def get_disputes(self, status_filter: str | None = None) -> list[dict[str, Any]]:
         """Return disputes from local dual-engine ledger."""
         with self._connect() as conn:
             if status_filter:
-                rows = conn.execute(
-                    "SELECT * FROM disputes WHERE UPPER(status) = UPPER(?) ORDER BY created_at DESC",
-                    (status_filter,),
-                ).fetchall()
+                if status_filter.upper() == "OPEN":
+                    rows = conn.execute(
+                        "SELECT * FROM disputes WHERE UPPER(status) IN ('OPEN', 'WAITING_FOR_SELLER_RESPONSE', 'REQUIRED_ACTION', 'UNDER_REVIEW') ORDER BY created_at DESC"
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM disputes WHERE UPPER(status) = UPPER(?) ORDER BY created_at DESC",
+                        (status_filter,),
+                    ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT * FROM disputes ORDER BY created_at DESC"
@@ -743,36 +1452,62 @@ class PulseStore:
         dispute_id: str,
         ai_evidence: str,
         resolution_order_id: str,
+        new_status: str | None = None,
     ) -> bool:
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT release_version FROM disputes WHERE UPPER(dispute_id) = UPPER(?)",
+                "SELECT release_version, status FROM disputes WHERE UPPER(dispute_id) = UPPER(?)",
                 (dispute_id.strip(),),
             ).fetchone()
             if not row:
                 return False
             rel_ver = row["release_version"]
+            current_status = row["status"]
+
+            # Gateway fidelity: submitting evidence does not equate to dispute adjudication.
+            # Mock / demonstration fixture disputes (PP-D-) resolve immediately on remediation.
+            # Real disputes (PP-R-) reflect gateway reality: submitting evidence sets status to
+            # WAITING_FOR_BUYER_RESPONSE or UNDER_REVIEW, and only becomes RESOLVED when PayPal confirms.
+            if dispute_id.strip().upper().startswith("PP-D-"):
+                target_status = "RESOLVED"
+            elif new_status:
+                target_status = new_status
+            elif current_status.upper() in ("RESOLVED", "CLOSED", "CANCELLED"):
+                target_status = current_status
+            else:
+                target_status = "UNDER_REVIEW"
+
             cur = conn.execute(
                 """
                 UPDATE disputes
-                SET status = 'RESOLVED',
+                SET status = ?,
                     ai_evidence_draft = ?,
                     resolution_order_id = ?,
                     resolved_at = ?
                 WHERE UPPER(dispute_id) = UPPER(?)
                 """,
-                (ai_evidence, resolution_order_id, now_str, dispute_id.strip()),
+                (target_status, ai_evidence, resolution_order_id, now_str, dispute_id.strip()),
             )
             open_row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM disputes WHERE release_version = ? AND UPPER(status) = 'OPEN'",
+                "SELECT COUNT(*) AS cnt FROM disputes WHERE release_version = ? AND UPPER(status) NOT IN ('RESOLVED', 'CLOSED', 'CANCELLED')",
                 (rel_ver,),
             ).fetchone()
             open_cnt = int(open_row["cnt"]) if open_row else 0
+
+            # Query if there are open country-specific disputes (e.g. DE)
+            de_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM disputes WHERE release_version = ? AND UPPER(status) NOT IN ('RESOLVED', 'CLOSED', 'CANCELLED') AND UPPER(buyer_country) = 'DE'",
+                (rel_ver,),
+            ).fetchone()
+            de_cnt = int(de_row["cnt"]) if de_row else 0
+            badge_details = f"{de_cnt} DE" if de_cnt > 0 else f"{open_cnt} OPEN"
+
+            resolved_label = "RESOLVED (PATCH v1.2.2)" if rel_ver == "v1.2.1" else f"RESOLVED ({rel_ver})"
             new_badge = (
-                f"DISPUTE ALERT ({open_cnt} DE)"
+                f"DISPUTE ALERT ({badge_details})"
                 if open_cnt > 0
-                else "RESOLVED (PATCH v1.2.2)"
+                else resolved_label
             )
             conn.execute(
                 """
@@ -791,12 +1526,14 @@ class PulseStore:
         dispute_id: str,
         ai_evidence: str = "",
         replacement_order_id: str = "",
+        new_status: str | None = None,
     ) -> bool:
         """Alias for mark_dispute_resolved with flexible keyword arguments."""
         return self.mark_dispute_resolved(
             dispute_id=dispute_id,
             ai_evidence=ai_evidence,
             resolution_order_id=replacement_order_id,
+            new_status=new_status,
         )
 
     def get_recent_daily_metrics(self, days: int = 14) -> list[dict[str, Any]]:
@@ -850,7 +1587,10 @@ class PulseStore:
         currencies = self.get_currency_breakdown()
         releases = self.get_releases(include_git_tags=False)
         disputes = self.get_disputes()
-        open_disputes = [d for d in disputes if d["status"] == "OPEN"]
+        open_disputes = [
+            d for d in disputes
+            if str(d.get("status", "")).upper() not in ("RESOLVED", "CLOSED", "CANCELLED")
+        ]
         daily_14 = self.get_recent_daily_metrics(days=14)
         live_txs = self.get_live_sandbox_transactions(limit=10)
 
@@ -928,7 +1668,7 @@ class PulseStore:
         api_latency_ms: float = 180.0,
         api_connected: bool = True,
     ) -> dict[str, Any]:
-        """Compute live CFO-grade Merchant Health Index across 4 dimensional sub-scores."""
+        """Compute live Merchant Health Index across 4 dimensional sub-scores."""
         # 1. Risk & Dispute Health (0-100)
         dispute_ratio_pct = round((open_disputes_count / max(1, total_orders)) * 100, 2)
         if open_disputes_count == 0:
@@ -1016,14 +1756,21 @@ class PulseStore:
 
     def simulate_incoming_dispute(
         self,
-        amount: float = 5.99,
-        currency: str = "EUR",
-        platform_sku: str = "Ubuntu Linux 24.04 (CLI)",
-        release_version: str = "v1.2.1",
+        amount: float | None = None,
+        currency: str | None = None,
+        platform_sku: str | None = None,
+        release_version: str | None = None,
         reason: str | None = None,
         buyer_country: str = "DE",
     ) -> dict[str, Any]:
-        """Simulate an incoming real-world chargeback event to test live dispute and CFO score workflows."""
+        """Simulate an incoming real-world chargeback event to test live dispute and Merchant Health workflows."""
+        ctx = detect_project_context()
+        has_cfg = bool(ctx.get("config_file"))
+        eff_amount = amount if amount is not None else (float(ctx.get("default_price", 19.99)) if has_cfg else 5.99)
+        eff_currency = (currency or (ctx.get("default_currency", "USD") if has_cfg else "EUR")).upper()
+        eff_sku = platform_sku or (ctx.get("default_sku") if has_cfg else "Ubuntu Linux 24.04 (CLI)")
+        eff_rel = release_version or (ctx.get("version") if has_cfg else "v1.2.1")
+
         now = datetime.now(timezone.utc)
         now_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         due_date = (now + timedelta(days=7)).strftime("%Y-%m-%d")
@@ -1032,7 +1779,7 @@ class PulseStore:
 
         reasons = [
             "License activation token failed with 504 Gateway Timeout during checkout unlock",
-            "Customer claims recurring seat billed without localized EU VAT receipt attachment",
+            "Customer claims recurring seat billed without localized VAT receipt attachment",
             "CLI authentication token expired immediately after PayPal transaction capture",
         ]
         desc = reason or random.choice(reasons)
@@ -1052,41 +1799,71 @@ class PulseStore:
                     now_str,
                     buyer_country,
                     f"simulated-buyer-{rand_suffix.lower()}@example.de",
-                    platform_sku,
-                    release_version,
-                    amount,
-                    currency,
+                    eff_sku,
+                    eff_rel,
+                    eff_amount,
+                    eff_currency,
                     "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
                     desc,
                     due_date,
                 ),
             )
-            # Increment dispute count on current release
-            conn.execute(
-                """
-                UPDATE releases
-                SET dispute_count = dispute_count + 1,
-                    status_badge = 'DISPUTE ALERT (ACTIVE)'
-                WHERE version = ?
-                """,
-                (release_version,),
-            )
+            cur_rel = conn.execute("SELECT version FROM releases WHERE version = ?", (eff_rel,)).fetchone()
+            if cur_rel:
+                conn.execute(
+                    """
+                    UPDATE releases
+                    SET dispute_count = dispute_count + 1,
+                        status_badge = 'DISPUTE ALERT (ACTIVE)'
+                    WHERE version = ?
+                    """,
+                    (eff_rel,),
+                )
+            else:
+                tag_meta = self._discover_git_tag_metadata().get(eff_rel, {})
+                commit_sha = tag_meta.get("commit", "HEAD")
+                rel_date = tag_meta.get("date", now.strftime("%Y-%m-%d"))
+                rel_title = f"{eff_rel} — {tag_meta['subject']}" if tag_meta.get("subject") else f"{eff_sku} ({eff_rel})"
+                conn.execute(
+                    """
+                    INSERT INTO releases (
+                        version, title, released_at, git_commit, installs, active_users,
+                        trial_starts, paid_conversions, conversion_rate, gross_usd,
+                        fees_usd, net_usd, refund_count, dispute_count, status_badge, ai_diagnostic
+                    ) VALUES (?, ?, ?, ?, 1, 1, 1, 0, 0.0, 0.0, 0.0, 0.0, 0, 1, 'DISPUTE ALERT (ACTIVE)', ?)
+                    """,
+                    (
+                        eff_rel,
+                        rel_title,
+                        rel_date,
+                        commit_sha,
+                        f"Alert: Active buyer dispute ({dispute_id}) detected on release {eff_rel}.",
+                    ),
+                )
             # Increment today's daily_metrics dispute count
             today_str = now.strftime("%Y-%m-%d")
-            conn.execute(
-                """
-                UPDATE daily_metrics
-                SET disputes = disputes + 1
-                WHERE day_date = (SELECT MAX(day_date) FROM daily_metrics WHERE day_date <= ?)
-                """,
-                (today_str,),
-            )
+            day_row = conn.execute("SELECT day_date FROM daily_metrics WHERE day_date = ?", (today_str,)).fetchone()
+            if day_row:
+                conn.execute("UPDATE daily_metrics SET disputes = disputes + 1 WHERE day_date = ?", (today_str,))
+            else:
+                max_day = conn.execute("SELECT MAX(day_date) AS max_d FROM daily_metrics WHERE day_date <= ?", (today_str,)).fetchone()
+                if max_day and max_day["max_d"] and not self.is_clean_mode():
+                    conn.execute("UPDATE daily_metrics SET disputes = disputes + 1 WHERE day_date = ?", (max_day["max_d"],))
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO daily_metrics (
+                            day_date, installs, paid_orders, gross_usd, fees_usd, net_usd, disputes, release_version
+                        ) VALUES (?, 0, 0, 0.0, 0.0, 0.0, 1, ?)
+                        """,
+                        (today_str, eff_rel),
+                    )
             conn.commit()
 
         return self.get_dispute_by_id(dispute_id) or {}
 
     def sync_external_disputes(self, external_items: list[dict[str, Any]]) -> int:
-        """Upsert real PayPal Sandbox disputes fetched from GET /v1/customer/disputes."""
+        """Upsert real PayPal Sandbox disputes fetched from GET /v1/customer/disputes (and /disputes/{id})."""
         if not external_items:
             return 0
         added = 0
@@ -1095,42 +1872,300 @@ class PulseStore:
                 disp_id = item.get("dispute_id", "")
                 if not disp_id:
                     continue
+                dtx_list = item.get("disputed_transactions") or [{}]
+                dtx = dtx_list[0] if dtx_list else {}
+                seller_tx_id = dtx.get("seller_transaction_id", "")
+                buyer_tx_id = dtx.get("buyer_transaction_id", "")
+                tx_id = seller_tx_id or buyer_tx_id or "PP-SANDBOX-TX"
+                dispute_amount = float(
+                    item.get("dispute_amount", {}).get("value", 5.99)
+                )
+                curr = item.get("dispute_amount", {}).get("currency_code", "USD")
+                reason = item.get("reason", "MERCHANDISE_OR_SERVICE_NOT_RECEIVED")
+                status = item.get("status", "OPEN")
+                create_time = item.get("create_time", datetime.now(timezone.utc).isoformat())
+                due_date_raw = item.get("seller_response_due_date", "")
+                due_date = due_date_raw[:10] if due_date_raw else (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d")
+
+                matched_tx = conn.execute(
+                    "SELECT release_version, platform_sku, country_code FROM transactions WHERE paypal_id IN (?, ?)",
+                    (seller_tx_id or tx_id, buyer_tx_id or tx_id),
+                ).fetchone()
+
+                # Parse custom attribution string (e.g. "release:v0.1.0|US|PulseCore Pro") and item details
+                custom_raw = str(dtx.get("custom", "") or "").strip()
+                custom_parts = [p.strip() for p in custom_raw.split("|") if p.strip()]
+                custom_rel = ""
+                custom_country = ""
+                custom_sku = ""
+                for part in custom_parts:
+                    if part.lower().startswith("release:"):
+                        custom_rel = part.split(":", 1)[1].strip()
+                    elif len(part) == 2 and part.isalpha() and part.isupper():
+                        custom_country = part
+                    elif not custom_rel and (part.startswith("v") or "." in part):
+                        custom_rel = part
+                    else:
+                        custom_sku = part
+
+                dtx_items = dtx.get("items") or [{}]
+                first_item = dtx_items[0] if dtx_items else {}
+                item_name = str(first_item.get("item_name", "") or "").strip()
+
+                ctx = detect_project_context()
+                rel_ver = (
+                    matched_tx["release_version"]
+                    if matched_tx
+                    else (custom_rel or ctx.get("version") or "v1.2.1")
+                )
+                sku = (
+                    matched_tx["platform_sku"]
+                    if matched_tx
+                    else (item_name or custom_sku or ctx.get("default_sku") or "Universal Platform")
+                )
+                country = (
+                    matched_tx["country_code"]
+                    if matched_tx
+                    else (custom_country or "US")
+                )
+
+                buyer_obj = dtx.get("buyer") or {}
+                buyer_email = str(buyer_obj.get("email", "") or "").strip() or "sandbox-buyer@example.com"
+                buyer_name = str(buyer_obj.get("name", "") or "").strip()
+
+                # Reconcile associated transaction in local ledger if missing
+                if not matched_tx and tx_id and tx_id != "PP-SANDBOX-TX" and dispute_amount > 0:
+                    tx_fx = FX_TO_USD.get(curr, 1.0)
+                    tx_fee = compute_paypal_fee(dispute_amount, curr, cross_border=(country != "US"))
+                    tx_net = round(dispute_amount - tx_fee, 2)
+                    conn.execute(
+                        """
+                        INSERT INTO transactions (
+                            paypal_id, created_at, gross_amount, fee_amount, net_amount,
+                            currency, usd_gross, usd_fee, usd_net, release_version,
+                            country_code, product_name, platform_sku, status,
+                            is_live_sandbox, approve_url
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '')
+                        ON CONFLICT(paypal_id) DO NOTHING
+                        """,
+                        (
+                            tx_id,
+                            create_time,
+                            dispute_amount,
+                            tx_fee,
+                            tx_net,
+                            curr,
+                            round(dispute_amount * tx_fx, 2),
+                            round(tx_fee * tx_fx, 2),
+                            round(tx_net * tx_fx, 2),
+                            rel_ver,
+                            country,
+                            item_name or f"{sku} ({rel_ver})",
+                            sku,
+                            "COMPLETED",
+                        ),
+                    )
+
+                # Extract buyer conversation thread and evidence notes
+                buyer_notes: list[str] = []
+                for msg in item.get("messages") or []:
+                    if str(msg.get("posted_by", "")).upper() == "BUYER":
+                        content = str(msg.get("content", "") or "").strip()
+                        if content and content not in buyer_notes:
+                            buyer_notes.append(content)
+                for ev in item.get("evidences") or []:
+                    if str(ev.get("source", "")).upper() == "SUBMITTED_BY_BUYER":
+                        note = str(ev.get("notes", "") or "").strip()
+                        if note and note not in buyer_notes:
+                            buyer_notes.append(note)
+
+                stage = str(item.get("dispute_life_cycle_stage", "") or "").strip()
+                if buyer_notes:
+                    joined_notes = " | ".join(buyer_notes)
+                    who = f"Buyer ({buyer_name})" if buyer_name else "Buyer"
+                    stage_suffix = f" [Stage: {stage}]" if stage else ""
+                    description = f'{who}: "{joined_notes}"{stage_suffix}'
+                else:
+                    description = f"Live Sandbox Dispute: {reason}"
+
+                # Check if seller already submitted evidence or messages upstream
+                seller_notes: list[str] = []
+                for ev in item.get("evidences") or []:
+                    if str(ev.get("source", "")).upper() == "SUBMITTED_BY_SELLER":
+                        s_note = str(ev.get("notes", "") or "").strip()
+                        if s_note and s_note not in seller_notes:
+                            seller_notes.append(s_note)
+                for msg in item.get("messages") or []:
+                    if str(msg.get("posted_by", "")).upper() == "SELLER":
+                        s_content = str(msg.get("content", "") or "").strip()
+                        if s_content and s_content not in seller_notes:
+                            seller_notes.append(s_content)
+                upstream_seller_evidence = "\n\n".join(seller_notes)
+
                 exists = conn.execute(
-                    "SELECT 1 FROM disputes WHERE dispute_id = ?", (disp_id,)
+                    "SELECT status, resolved_at, ai_evidence_draft, description, buyer_email, platform_sku FROM disputes WHERE dispute_id = ?",
+                    (disp_id,),
                 ).fetchone()
                 if not exists:
-                    dispute_amount = float(
-                        item.get("dispute_amount", {}).get("value", 5.99)
-                    )
-                    curr = item.get("dispute_amount", {}).get("currency_code", "USD")
-                    reason = item.get("reason", "MERCHANDISE_OR_SERVICE_NOT_RECEIVED")
-                    status = item.get("status", "OPEN")
-                    create_time = item.get("create_time", datetime.now(timezone.utc).isoformat())
                     conn.execute(
                         """
                         INSERT INTO disputes (
                             dispute_id, paypal_transaction_id, created_at, buyer_country,
                             buyer_email, platform_sku, release_version, amount, currency,
-                            reason, description, status, due_date
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            reason, description, status, due_date, ai_evidence_draft
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             disp_id,
-                            item.get("disputed_transactions", [{}])[0].get("seller_transaction_id", "PP-SANDBOX-TX"),
+                            tx_id,
                             create_time,
-                            "US",
-                            "sandbox-buyer@example.com",
-                            "Universal Platform",
-                            "v1.2.1",
+                            country,
+                            buyer_email,
+                            sku,
+                            rel_ver,
                             dispute_amount,
                             curr,
                             reason,
-                            f"Live Sandbox Dispute: {reason}",
+                            description,
                             status,
-                            (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"),
+                            due_date,
+                            upstream_seller_evidence,
                         ),
                     )
                     added += 1
-            if added > 0:
-                conn.commit()
+                else:
+                    effective_status = status  # Authoritative PayPal gateway status; never falsely override with local resolved_at
+                    new_desc = description if (buyer_notes or str(exists["description"]).startswith("Live Sandbox Dispute:")) else exists["description"]
+                    new_email = buyer_email if buyer_email != "sandbox-buyer@example.com" else exists["buyer_email"]
+                    new_sku = sku if sku != "Universal Platform" else exists["platform_sku"]
+                    new_evidence = exists["ai_evidence_draft"] or upstream_seller_evidence
+                    conn.execute(
+                        """
+                        UPDATE disputes
+                        SET status = ?, due_date = ?, amount = ?, currency = ?,
+                            paypal_transaction_id = ?, buyer_country = ?, buyer_email = ?,
+                            platform_sku = ?, release_version = ?, description = ?,
+                            ai_evidence_draft = ?
+                        WHERE dispute_id = ?
+                        """,
+                        (
+                            effective_status,
+                            due_date,
+                            dispute_amount,
+                            curr,
+                            tx_id,
+                            country,
+                            new_email,
+                            new_sku,
+                            rel_ver,
+                            new_desc,
+                            new_evidence,
+                            disp_id,
+                        ),
+                    )
+            conn.commit()
+        return added
+
+    def sync_external_transactions(self, external_tx_details: list[dict[str, Any]]) -> int:
+        """Upsert real PayPal Sandbox transactions fetched from GET /v1/reporting/transactions."""
+        if not external_tx_details:
+            return 0
+        added = 0
+        ctx = detect_project_context()
+        default_rel = ctx.get("version") or "v1.2.1"
+        default_sku = ctx.get("default_sku") or "PulseCore Pro"
+
+        with self._connect() as conn:
+            for item in external_tx_details:
+                tx_info = item.get("transaction_info", {})
+                tx_id = tx_info.get("transaction_id", "")
+                if not tx_id:
+                    continue
+                amt_obj = tx_info.get("transaction_amount", {})
+                gross_amt = abs(float(amt_obj.get("value", 0.0) or 0.0))
+                if gross_amt <= 0:
+                    continue
+                curr = str(amt_obj.get("currency_code", "USD")).upper()
+                fee_obj = tx_info.get("fee_amount", {})
+                if fee_obj and fee_obj.get("value"):
+                    fee_amt = abs(float(fee_obj.get("value", 0.0)))
+                else:
+                    fee_amt = compute_paypal_fee(gross_amt, curr)
+                net_amt = round(gross_amt - fee_amt, 2)
+
+                fx = FX_TO_USD.get(curr, 1.0)
+                usd_gross = round(gross_amt * fx, 2)
+                usd_fee = round(fee_amt * fx, 2)
+                usd_net = round(net_amt * fx, 2)
+
+                created_at = (
+                    tx_info.get("transaction_initiation_date")
+                    or tx_info.get("transaction_updated_date")
+                    or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                )
+
+                raw_status = str(tx_info.get("transaction_status", "S")).upper()
+                status = "COMPLETED" if raw_status in ("S", "SUCCESS", "COMPLETED") else "PENDING"
+
+                payer_info = item.get("payer_info", {})
+                country = str(payer_info.get("country_code", "US") or "US").upper()
+
+                cart_info = item.get("cart_info", {})
+                item_details = cart_info.get("item_details") or []
+                first_item = item_details[0] if item_details else {}
+                item_name = str(first_item.get("item_name", "") or "").strip()
+                item_sku = str(first_item.get("item_sku", "") or "").strip()
+
+                custom_raw = str(tx_info.get("custom_field", "") or "").strip()
+                custom_parts = [p.strip() for p in custom_raw.split("|") if p.strip()]
+                custom_rel = ""
+                custom_country = ""
+                custom_sku = ""
+                for part in custom_parts:
+                    if part.lower().startswith("release:"):
+                        custom_rel = part.split(":", 1)[1].strip()
+                    elif len(part) == 2 and part.isalpha() and part.isupper():
+                        custom_country = part
+                    elif not custom_rel and (part.startswith("v") or "." in part):
+                        custom_rel = part
+                    else:
+                        custom_sku = part
+
+                rel_ver = custom_rel or default_rel
+                sku = item_sku or custom_sku or item_name or default_sku
+                country = custom_country or country
+                prod_name = item_name or f"{sku} ({rel_ver})"
+
+                existing = conn.execute("SELECT id FROM transactions WHERE paypal_id = ?", (tx_id,)).fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO transactions (
+                        paypal_id, created_at, gross_amount, fee_amount, net_amount,
+                        currency, usd_gross, usd_fee, usd_net, release_version,
+                        country_code, product_name, platform_sku, status,
+                        is_live_sandbox, approve_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '')
+                    ON CONFLICT(paypal_id) DO UPDATE SET
+                        status = excluded.status
+                    """,
+                    (
+                        tx_id,
+                        created_at,
+                        gross_amt,
+                        fee_amt,
+                        net_amt,
+                        curr,
+                        usd_gross,
+                        usd_fee,
+                        usd_net,
+                        rel_ver,
+                        country,
+                        prod_name,
+                        sku,
+                        status,
+                    ),
+                )
+                if not existing:
+                    added += 1
+            conn.commit()
         return added

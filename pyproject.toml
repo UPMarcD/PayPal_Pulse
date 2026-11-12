@@ -5,12 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "paypal-pulse"
 version = "0.1.0"
-description = "Terminal-Native Financial Telemetry & AI Copilot for Indie Developers and Micro-Businesses on PayPal"
+description = "Terminal-Native Financial Telemetry & AI Copilot for Developers and Businesses on PayPal"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial :: Point-Of-Sale",
+]
 authors = [
-    {name = "Marc Jacob Doria"}
+    {name = "Marc Doria"}
 ]
 dependencies = [
     "typer>=0.9.0",
@@ -19,6 +32,7 @@ dependencies = [
     "httpx>=0.26.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.5.0",
+    "questionary>=2.0.0",
 ]
 
 [project.optional-dependencies]
